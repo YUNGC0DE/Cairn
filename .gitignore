@@ -1,0 +1,7 @@
+cairn-mvp.md
+/bin/
+/dist/
+/testrepos/
+*.test
+docs/
+*.md

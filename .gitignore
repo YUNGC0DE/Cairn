@@ -5,3 +5,4 @@ cairn-mvp.md
 *.test
 docs/
 *.md
+!README.md

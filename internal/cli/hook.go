@@ -156,6 +156,7 @@ func hookPrepareCommitMsg(env *Env, args []string) error {
 			Budget:       cfg.Budget,
 			Model:        cfg.Model,
 			VerifyModel:  cfg.VerifyModel,
+			Effort:       cfg.Effort,
 			PromptBudget: cfg.PromptBudget,
 			Trace:        log,
 		})
@@ -167,8 +168,10 @@ func hookPrepareCommitMsg(env *Env, args []string) error {
 			for _, d := range res.DisputedClaims() {
 				meta.Disputed = append(meta.Disputed, d.Claim)
 			}
-			if res.Model != "" {
-				meta.Agent = agentLabel(sessions, res.Model)
+			// Only claim a distiller when something was actually distilled: a
+			// metadata-only record is the absence of that work, not a credit for it.
+			if by := distilledBy(res); by != "" && res.Extraction != nil {
+				meta.Agent = agentLabel(sessions, by)
 			}
 		}
 	}
@@ -186,7 +189,7 @@ func hookPrepareCommitMsg(env *Env, args []string) error {
 			messageDigest(repo.Root, body)); err != nil {
 			log("pending: %v", err)
 		}
-		summarize(env, res, meta, sessions, "note pending")
+		summarize(env, repo, res, meta, sessions, "note pending")
 	default:
 		msg, err := record.Compose(repo.Root, body, prose, meta)
 		if err != nil {
@@ -201,7 +204,7 @@ func hookPrepareCommitMsg(env *Env, args []string) error {
 			messageDigest(repo.Root, msg)); err != nil {
 			log("pending: %v", err)
 		}
-		summarize(env, res, meta, sessions, "")
+		summarize(env, repo, res, meta, sessions, "")
 	}
 	return nil
 }
@@ -272,6 +275,8 @@ func hookPostCommit(env *Env, _ []string) error {
 			log("notes: %v", err)
 			// The record is lost, so do not consume the transcript: the next
 			// commit will try again rather than leave a silent hole.
+			logRun(repo, "note NOT attached to "+short(sha)+" — the record was not stored",
+				[]string{err.Error()})
 			return nil
 		}
 		fmt.Fprintf(env.Err, "cairn: record written to %s for %s\n", gitx.NotesRef, short(sha))
@@ -305,6 +310,19 @@ func metaFor(sessions []*transcript.Session, files []string) record.Meta {
 	return m
 }
 
+// distilledBy names what produced the record: the model when the engine reports
+// one, the engine itself when it does not.
+//
+// `cursor-agent` answers on the model configured in Cursor and never says which,
+// so without this a record distilled through it would carry no trace of how it
+// was made — the one thing a record must always be able to say about itself.
+func distilledBy(res *distill.Result) string {
+	if res.Model != "" {
+		return res.Model
+	}
+	return res.Engine
+}
+
 // agentLabel renders "claude-code/sonnet", naming the agent that did the work
 // and the model that distilled it when they differ.
 func agentLabel(sessions []*transcript.Session, distillModel string) string {
@@ -328,8 +346,9 @@ func agentLabel(sessions []*transcript.Session, distillModel string) string {
 }
 
 // summarize prints the one line that makes cairn trustworthy: what it recorded,
-// how confident it is, and how long it cost.
-func summarize(env *Env, res *distill.Result, meta record.Meta, sessions []*transcript.Session, suffix string) {
+// how confident it is, and how long it cost — and files the same line in the run
+// log, because a commit made from an editor's UI never shows this stream.
+func summarize(env *Env, repo *gitx.Repo, res *distill.Result, meta record.Meta, sessions []*transcript.Session, suffix string) {
 	var parts []string
 	parts = append(parts, string(meta.Confidence))
 	if res != nil && res.Extraction != nil {
@@ -349,13 +368,17 @@ func summarize(env *Env, res *distill.Result, meta record.Meta, sessions []*tran
 	if suffix != "" {
 		parts = append(parts, suffix)
 	}
-	fmt.Fprintf(env.Err, "cairn: %s from %s [%s]\n",
+	headline := fmt.Sprintf("%s from %s [%s]",
 		verb(meta.Confidence), meta.Agent, strings.Join(parts, ", "))
+	fmt.Fprintf(env.Err, "cairn: %s\n", headline)
+	var notes []string
 	if res != nil {
-		for _, n := range res.Notes {
+		notes = res.Notes
+		for _, n := range notes {
 			fmt.Fprintf(env.Err, "cairn:   %s\n", n)
 		}
 	}
+	logRun(repo, headline, notes)
 	_ = sessions
 }
 

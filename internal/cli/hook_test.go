@@ -286,6 +286,83 @@ func TestHookDegradesToTrailersWhenExtractionFails(t *testing.T) {
 	if strings.Contains(msg, "Rejected:") {
 		t.Errorf("no prose should be invented:\n%s", msg)
 	}
+	// Nothing was distilled, so nothing may take credit for distilling it.
+	if strings.Contains(msg, "distilled by") {
+		t.Errorf("a metadata-only record must not name a distiller:\n%s", msg)
+	}
+}
+
+// TestRunLogExplainsADegradedRecord covers the case the log exists for: the
+// commit was made from an editor's UI, nobody saw the hook's stderr, and the
+// record came out thin. The reason has to survive somewhere.
+func TestRunLogExplainsADegradedRecord(t *testing.T) {
+	h := newHarness(t, "the model refused to produce JSON")
+	h.repo.Write("README.md", "start\n")
+	h.repo.Add(".")
+	h.repo.Commit("Initial commit")
+	if err := cmdInit(h.env, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := filepath.Join(h.repo.GitDir, "cairn", runLogName)
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("nothing has run yet; there should be no log")
+	}
+
+	h.writeTranscript(t, "add rate limiting", "internal/auth/limit.go")
+	h.repo.Write("internal/auth/limit.go", "package auth\n")
+	h.repo.Add(".")
+	h.commitViaHook(t, "Add rate limiting")
+
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("no run log: %v", err)
+	}
+	got := string(b)
+	if !strings.Contains(got, "metadata-only") {
+		t.Errorf("the log must carry the outcome:\n%s", got)
+	}
+	if !strings.Contains(got, "unusable JSON") {
+		t.Errorf("the log must carry the reason, not just the outcome:\n%s", got)
+	}
+	// The transcript itself must never be copied out of its own store — not into
+	// git, and not into a log file either.
+	if strings.Contains(got, "add rate limiting") {
+		t.Errorf("the log must not quote the session:\n%s", got)
+	}
+}
+
+func TestRunLogStaysBounded(t *testing.T) {
+	repo := testutil.NewRepo(t)
+	path := filepath.Join(repo.GitDir, "cairn", runLogName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("2026-08-01T00:00:00Z  recorded from claude-code [verified]\n", 8000)
+	if err := os.WriteFile(path, []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Size() < runLogMaxSize {
+		t.Fatalf("fixture is too small to trigger trimming: %d", before.Size())
+	}
+
+	logRun(repo.Repo, "recorded from claude-code [verified]", nil)
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Errorf("log grew from %d to %d instead of being trimmed", before.Size(), after.Size())
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.HasSuffix(string(b), "[verified]\n") || !strings.HasPrefix(string(b), "2026-") {
+		t.Error("trimming must cut whole lines and keep the newest ones")
+	}
 }
 
 func TestHookSkipsMergeAndSquash(t *testing.T) {

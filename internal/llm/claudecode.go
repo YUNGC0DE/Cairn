@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -43,13 +44,34 @@ func (c *ClaudeCode) Path() string { return lookPath(c.bin()) }
 // DefaultModel is a deliberate pin rather than the user's configured default:
 // distillation is a small extraction job, and inheriting an opus-class default
 // would make every commit slower and costlier for no gain in record quality.
+// The same model runs both passes.
 const DefaultModel = "sonnet"
 
-// DefaultVerifyModel is the model for the verification pass. Checking whether a
-// diff supports a claim is narrow and mechanical, so the small fast model both
-// does it well and keeps the pass inside a commit's time budget — measured, the
-// difference is what makes a "verified" record possible at the default timeout.
-const DefaultVerifyModel = "haiku"
+// DefaultEffort is the reasoning effort for both passes.
+//
+// It replaces the older trick of running verification on a smaller model:
+// effort, not model size, is what distillation is oversupplied with. Extraction
+// reads a session and fills eight fields; verification decides whether a diff
+// supports a claim. Neither is a reasoning problem, and measured on this machine
+// the same prompt answers in 2.9 s at low effort against 8.4 s at the default.
+const DefaultEffort = "low"
+
+// modelFor resolves what to ask for: the configured alias when there is one,
+// otherwise this engine's own default. Defaults live in the engine because
+// aliases are engine-specific — `cursor-agent` knows nothing called "sonnet".
+func (c *ClaudeCode) modelFor(req Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
+	return DefaultModel
+}
+
+func (c *ClaudeCode) effortFor(req Request) string {
+	if req.Effort != "" {
+		return req.Effort
+	}
+	return DefaultEffort
+}
 
 type claudeEnvelope struct {
 	IsError    bool            `json:"is_error"`
@@ -64,14 +86,12 @@ func (c *ClaudeCode) Complete(ctx context.Context, req Request) (*Response, erro
 	ctx, cancel := deadline(ctx, req.Budget)
 	defer cancel()
 
-	model := req.Model
-	if model == "" {
-		model = DefaultModel
-	}
+	model := c.modelFor(req)
 	args := []string{
 		"-p",
 		"--output-format", "json",
 		"--model", model,
+		"--effort", c.effortFor(req),
 		// No MCP servers: each one costs a startup handshake we cannot afford.
 		"--strict-mcp-config",
 		// Do not litter the user's session history with hook-driven calls.
@@ -110,6 +130,20 @@ func (c *ClaudeCode) Complete(ctx context.Context, req Request) (*Response, erro
 
 // CursorAgent runs `cursor-agent -p` in headless mode. It has no system-prompt
 // flag, so the system prompt is folded into the user prompt.
+//
+// Two things about it are not optional, and both were found by running the
+// binary rather than reading its help:
+//
+//   - It refuses to answer in a directory it has not been told to trust, and
+//     cairn runs engines in a scratch directory precisely so they cannot touch
+//     the repository. Hence --trust, on a directory that is created empty and
+//     holds nothing.
+//   - Its model ids are its own (`cursor-agent --list-models` prints 193 of
+//     them): no "sonnet", no "haiku", and the effort level is baked into the id
+//     (`claude-sonnet-5-low`) rather than passed as a flag. So no model and no
+//     effort are sent unless the user configured them, and Cursor answers on
+//     whatever the account has selected. Pinning an id here would only fail on
+//     accounts whose plan does not include it.
 type CursorAgent struct {
 	Bin string
 }
@@ -139,7 +173,16 @@ func (c *CursorAgent) Complete(ctx context.Context, req Request) (*Response, err
 	if req.System != "" {
 		prompt = req.System + "\n\n" + prompt
 	}
-	args := []string{"-p", prompt, "--output-format", "text"}
+	args := []string{
+		"-p", prompt,
+		"--output-format", "text",
+		// The scratch directory is new every boot and empty; without this the CLI
+		// stops and asks a human, which inside a git hook means it never answers.
+		"--trust",
+		// Q&A mode: read-only, no shell and no edits. Distillation is text in,
+		// text out — the equivalent of the denied tool list given to claude.
+		"--mode", "ask",
+	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
@@ -191,12 +234,35 @@ func runCommand(ctx context.Context, bin string, args []string, stdin string) ([
 		if msg == "" {
 			msg = strings.TrimSpace(out.String())
 		}
+		msg = annotateSandboxNetwork(msg)
 		if errors.As(err, &ee) {
-			return nil, fmt.Errorf("%s exited %d: %s", bin, ee.ExitCode(), clip(msg, 300))
+			return nil, fmt.Errorf("%s exited %d: %s", bin, ee.ExitCode(), clip(msg, 400))
 		}
-		return nil, fmt.Errorf("%s: %w: %s", bin, err, clip(msg, 300))
+		return nil, fmt.Errorf("%s: %w: %s", bin, err, clip(msg, 400))
 	}
 	return out.Bytes(), nil
+}
+
+// annotateSandboxNetwork explains the Cursor Agent seatbelt failure mode.
+//
+// Inside that sandbox, HTTP(S)_PROXY points at a local interceptor. Engines that
+// speak TLS to their API then die with SSL EPROTO ("packet length too long") —
+// which looks like a random transport bug, not "your git commit is sandboxed".
+// The hook cannot escape the sandbox; the caller has to re-run with
+// full_network/all permissions (or commit from a normal terminal).
+func annotateSandboxNetwork(msg string) string {
+	if os.Getenv("CURSOR_SANDBOX") == "" {
+		return msg
+	}
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "eproto") &&
+		!strings.Contains(lower, "ssl") &&
+		!strings.Contains(lower, "enotfound") &&
+		!strings.Contains(lower, "network") {
+		return msg
+	}
+	return msg + " — Cursor agent sandbox is intercepting network; " +
+		"re-run the commit with full_network/all permissions"
 }
 
 // scrubEnv removes markers that tell a nested agent it is running inside
@@ -232,10 +298,17 @@ func scrubEnv(env []string) []string {
 
 // scratchDir is where engines run: never the repository, so they cannot pick up
 // the project's CLAUDE.md, settings or hooks, and cannot touch the work tree.
+//
+// It is one stable empty directory rather than a fresh one per call. An agent
+// CLI keys its own per-workspace state on the working directory — cursor-agent
+// keeps a folder per project under ~/.cursor/projects, and trust is recorded
+// there — so a new temp directory every commit would mean re-trusting every
+// commit and a new orphan folder every commit. Nothing of the user's is in it,
+// and cairn never writes to it.
 func scratchDir() (string, func()) {
-	d, err := os.MkdirTemp("", "cairn-llm-")
-	if err != nil {
+	d := filepath.Join(os.TempDir(), "cairn-llm-scratch")
+	if err := os.MkdirAll(d, 0o700); err != nil {
 		return os.TempDir(), func() {}
 	}
-	return d, func() { _ = os.RemoveAll(d) }
+	return d, func() {}
 }

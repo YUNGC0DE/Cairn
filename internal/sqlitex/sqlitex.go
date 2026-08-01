@@ -8,7 +8,9 @@
 //
 // Reads never touch the user's live database: the file and its -wal/-shm
 // sidecars are snapshotted to a temp directory first, so an in-progress Cursor
-// session cannot be corrupted and no lock is taken.
+// session cannot be corrupted and no lock is taken. Stores too large to copy
+// inside a commit hook — Cursor's IDE database is measured in gigabytes — are
+// opened in place instead, read-only; see QueryReadOnly.
 package sqlitex
 
 import (
@@ -22,6 +24,11 @@ import (
 	"strings"
 	"sync"
 )
+
+// MaxSnapshotBytes is the largest database Query will copy before reading it.
+// Above it, copying would cost more than the whole commit: Cursor's IDE store is
+// several gigabytes on a machine that has been used for a while.
+const MaxSnapshotBytes = 256 << 20
 
 const (
 	colSep = "\x1f"
@@ -50,19 +57,48 @@ func bin() string {
 
 // Query runs sql against a snapshot of dbPath and returns rows of column
 // strings. BLOB columns must be wrapped in hex() by the caller.
+//
+// A database larger than MaxSnapshotBytes is read in place instead of copied:
+// the snapshot exists to protect the user's file, and read-only access protects
+// it just as well without spending a commit's worth of time on the copy.
 func Query(dbPath, sql string) ([][]string, error) {
-	exe := bin()
-	if exe == "" {
+	if bin() == "" {
 		return nil, ErrUnavailable
+	}
+	if st, err := os.Stat(dbPath); err == nil && st.Size() > MaxSnapshotBytes {
+		return QueryReadOnly(dbPath, sql)
 	}
 	snap, cleanup, err := snapshot(dbPath)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
+	return run(dbPath, snap, sql)
+}
 
-	cmd := exec.Command(exe, "-batch", "-noheader",
-		"-separator", colSep, "-newline", rowSep, snap, sql)
+// QueryReadOnly runs sql against dbPath itself, opened read-only.
+//
+// It exists for stores that cannot be copied inside a git hook — Cursor's IDE
+// database is a single multi-gigabyte file holding every conversation ever had.
+// SQLite refuses every write on a read-only connection, so the user's data is as
+// safe as it is under Query; what is lost is the isolation from concurrent
+// writes, which for a key-value read of one finished conversation costs nothing.
+func QueryReadOnly(dbPath, sql string) ([][]string, error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, err
+	}
+	return run(dbPath, fileURI(dbPath)+"?mode=ro", sql)
+}
+
+// run executes one statement. target is what sqlite3 opens; dbPath only names
+// the database in errors.
+func run(dbPath, target, sql string) ([][]string, error) {
+	exe := bin()
+	if exe == "" {
+		return nil, ErrUnavailable
+	}
+	cmd := exec.Command(exe, "-batch", "-noheader", "-readonly",
+		"-separator", colSep, "-newline", rowSep, target, sql)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -77,6 +113,25 @@ func Query(dbPath, sql string) ([][]string, error) {
 		rows = append(rows, strings.Split(r, colSep))
 	}
 	return rows, nil
+}
+
+// fileURI renders a path as a SQLite file: URI. Percent-encoding is not
+// cosmetic here: the real store lives under "Application Support", and '?' or
+// '#' in a path would otherwise be read as the start of the query fragment.
+func fileURI(path string) string {
+	var b strings.Builder
+	b.WriteString("file:")
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '/', c == '.', c == '-', c == '_', c == '~':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // snapshot copies a database and its write-ahead sidecars to a temp directory.

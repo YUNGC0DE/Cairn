@@ -106,6 +106,17 @@ type Parser interface {
 	Load(ref Ref, from Cursor) (*Session, error)
 }
 
+// Pointerer is implemented by parsers whose sessions are not one file each.
+//
+// The default transcript pointer is the sha256 of Ref.Path, which assumes a
+// session *is* a file. Cursor's IDE keeps every conversation in one shared
+// multi-gigabyte database, where that hash would be both unreadable inside a
+// commit hook and wrong — it would change whenever any other conversation did.
+type Pointerer interface {
+	// Pointer returns a "sha256:…" pointer to this session's content, or "".
+	Pointer(ref Ref) string
+}
+
 // LastHumanPrompt returns the most recent genuine user message text, which is
 // the best single proxy for intent.
 func (s *Session) LastHumanPrompt() string {
@@ -116,6 +127,93 @@ func (s *Session) LastHumanPrompt() string {
 		}
 	}
 	return ""
+}
+
+// Relevant keeps the sessions that wrote a file this commit is staging, and
+// reports how many were left out.
+//
+// The staged file list is ground truth — cairn is holding the diff — so there is
+// no need to guess from tool names whether a session "did work". A session that
+// wrote none of these files did not produce this commit: it discussed the
+// project, or it worked on something else that is not being committed. With a
+// hundred conversations open on a repository, each of those would otherwise take
+// an equal share of the prompt budget away from the sessions that did the work.
+//
+// Running a command is not writing a file. A build, a test run or a `git status`
+// changes nothing that lands in the commit, and treating a terminal as an editor
+// is what made an earlier version of this test keep every conversation.
+//
+// Two escape hatches, because a wrongly dropped session is work cairn can never
+// explain while an extra one only costs budget: with nothing staged there is
+// nothing to compare against, and when *no* session wrote a staged file — the
+// human edited by hand, or edited through a shell — everything is kept.
+func Relevant(sessions []*Session, staged []string) (kept []*Session, skipped int) {
+	if len(staged) == 0 {
+		return sessions, 0
+	}
+	for _, s := range sessions {
+		if s.wroteAnyOf(staged) {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
+		return sessions, 0
+	}
+	return kept, len(sessions) - len(kept)
+}
+
+// wroteAnyOf reports whether a non-read-only tool call in this session named one
+// of the staged paths. Reading a file names it too, which is why the tool still
+// has to be one that could change it.
+func (s *Session) wroteAnyOf(staged []string) bool {
+	for _, m := range s.Messages {
+		for _, t := range m.Tools {
+			if readOnlyTool(t.Name) {
+				continue
+			}
+			for _, f := range t.Files {
+				if isStaged(f, staged) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isStaged matches a path from a tool call against a repo-relative staged path.
+// Agents record absolute paths, git records relative ones, so the comparison is
+// by path suffix on a separator boundary — never a bare substring, which would
+// match `auth/limit.go` against `internal/auth/limit.go.bak`.
+func isStaged(touched string, staged []string) bool {
+	t := filepath.ToSlash(filepath.Clean(touched))
+	for _, s := range staged {
+		s = filepath.ToSlash(filepath.Clean(s))
+		if t == s || strings.HasSuffix(t, "/"+s) {
+			return true
+		}
+	}
+	return false
+}
+
+// readOnlyTool recognises the tools that cannot change a file, across the agents
+// cairn reads: Read/Grep/Glob/WebFetch, read_file_v2, ripgrep_raw_search,
+// glob_file_search, web_search. It exists because naming a file proves nothing —
+// reading one names it too.
+func readOnlyTool(tool string) bool {
+	t := strings.ToLower(tool)
+	if t == "" {
+		return false
+	}
+	for _, verb := range []string{
+		"read", "view", "grep", "search", "glob", "find", "list", "ls",
+		"fetch", "lookup", "todo", "think", "plan", "diagnostic",
+	} {
+		if strings.Contains(t, verb) {
+			return true
+		}
+	}
+	return false
 }
 
 // TouchedFiles lists files the session's tool calls touched, most recent first.

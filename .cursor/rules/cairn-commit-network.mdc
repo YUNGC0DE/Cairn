@@ -1,0 +1,20 @@
+---
+description: Commits that run cairn hooks need unsandboxed network
+alwaysApply: true
+---
+
+# Cairn commits from Cursor Agent
+
+Cairn's `prepare-commit-msg` hook calls `claude` / `cursor-agent` for distillation.
+The default Cursor Agent sandbox injects `HTTP(S)_PROXY` to a local seatbelt proxy;
+`cursor-agent` then fails with `SSL EPROTO … packet length too long`, and the
+record collapses to metadata-only.
+
+When running `git commit` (or any command that triggers cairn hooks) from the
+Agent shell:
+
+- Request `required_permissions: ["full_network"]` at minimum
+- Prefer `["all"]` if the commit also needs unrestricted git hook filesystem access
+- Do not commit under the default sandbox — distillation will not reach the API
+
+A normal external terminal is fine; only the Agent sandbox breaks this.

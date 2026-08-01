@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/YUNGC0DE/Cairn/internal/sqlitex"
 	"github.com/YUNGC0DE/Cairn/internal/transcript/claudecode"
 	"github.com/YUNGC0DE/Cairn/internal/transcript/cursorcli"
+	"github.com/YUNGC0DE/Cairn/internal/transcript/cursoride"
 )
 
 func cmdDoctor(env *Env, args []string) error {
@@ -53,23 +56,33 @@ func cmdDoctor(env *Env, args []string) error {
 
 	cfg := config.Load(repo, env.Getenv)
 	line(ok, "mode", string(cfg.Mode))
-	line(ok, "time budget", cfg.Budget.String())
+	line(ok, "time budget", cfg.Budget.String()+" / session")
 	if !cfg.Enabled {
 		line(warn, "enabled", "cairn is switched off for this repository")
 	}
 
-	// Engines. Without one, cairn still records trailers, so this is a warning.
+	// Engines. Each installed one is *called*, because being on PATH says nothing
+	// about being logged in or in quota — and that is the failure that silently
+	// turns every commit into metadata-only.
 	engineFound := false
 	for _, e := range llm.Engines() {
-		if e.Available() {
-			engineFound = true
-			line(ok, "engine "+e.Name(), e.Path())
-		} else {
-			line(warn, "engine "+e.Name(), "not on PATH")
+		if !e.Available() {
+			line(warn, "engine "+e.Name(), "not installed")
+			continue
 		}
+		engineFound = true
+		status, detail := probeEngine(e, cfg)
+		line(status, "engine "+e.Name(), detail)
 	}
-	if !engineFound {
+	switch {
+	case !engineFound:
 		line(warn, "distillation", "no engine — records will be trailers only")
+	case cfg.Engine != "" && cfg.Engine != "auto":
+		line(ok, "distillation order", cfg.Engine+" only (pinned by cairn.engine — no fallback)")
+	default:
+		if e, err := llm.Pick("auto"); err == nil {
+			line(ok, "distillation order", e.Name()+" (next one runs if the first fails outright)")
+		}
 	}
 
 	if sqlitex.Available() {
@@ -89,6 +102,11 @@ func cmdDoctor(env *Env, args []string) error {
 	} else {
 		line(warn, "cursor-cli transcripts", d+" (absent)")
 	}
+	if db := cursoride.New().GlobalDB(); fileExists(db) {
+		line(ok, "cursor-ide transcripts", db)
+	} else {
+		line(warn, "cursor-ide transcripts", db+" (absent)")
+	}
 
 	if repoErr == nil {
 		refs, errs := capture.Discover(repo.Root, time.Time{})
@@ -101,8 +119,63 @@ func cmdDoctor(env *Env, args []string) error {
 			line(ok, "offsets", fmt.Sprintf("%s tracked in %s",
 				plural(len(off.Cursors), "session", "sessions"), rel(repo.Root, repo.CairnDir())))
 		}
+		logPath := filepath.Join(repo.CairnDir(), runLogName)
+		if fileExists(logPath) {
+			line(ok, "run log", rel(repo.Root, logPath)+" — what cairn did on each commit")
+		} else {
+			line(ok, "run log", rel(repo.Root, logPath)+" (written from the first agent commit)")
+		}
 	}
 	return nil
+}
+
+// probePrompt is the smallest request that exercises everything a commit needs:
+// the process spawns, the CLI is logged in and in quota, the flags are accepted,
+// the model id resolves, and the answer survives ExtractJSON — which is how every
+// real distillation reads a reply.
+const probePrompt = `Reply with only this JSON object and nothing else: {"ok": true}`
+
+// probeEngine calls one engine and describes what came back.
+//
+// One call, on the extraction pass: that is the model a commit spends its time
+// on, and a second call would double the cost of running `doctor` to re-test the
+// same login.
+func probeEngine(e llm.Engine, cfg config.Config) (status, detail string) {
+	start := time.Now()
+	resp, err := e.Complete(context.Background(), llm.Request{
+		Prompt: probePrompt,
+		Model:  cfg.Model,
+		Effort: cfg.Effort,
+		Budget: cfg.Budget,
+	})
+	took := time.Since(start).Round(100 * time.Millisecond)
+	switch {
+	case err != nil:
+		return "✗", fmt.Sprintf("installed, but failed after %s — %s", took, trimTo(collapseSpace(err.Error()), 110))
+	case !answersWithJSON(resp.Text):
+		// The call worked and the answer is unusable, which is how a record ends
+		// up metadata-only with a healthy-looking engine.
+		return "✗", fmt.Sprintf("answered in %s but not with JSON cairn can read — %s",
+			took, trimTo(collapseSpace(resp.Text), 70))
+	default:
+		return "✓", fmt.Sprintf("%s · answered in %s", orDefault(resp.Model, "engine default"), took)
+	}
+}
+
+func answersWithJSON(text string) bool {
+	var reply struct {
+		OK bool `json:"ok"`
+	}
+	return llm.ExtractJSON(text, &reply) == nil
+}
+
+func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func cmdSessions(env *Env, args []string) error {
@@ -159,6 +232,14 @@ func dirExists(p string) bool {
 	}
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
+}
+
+func fileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
 
 func trimTo(s string, n int) string {

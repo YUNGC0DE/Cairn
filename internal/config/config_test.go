@@ -21,8 +21,8 @@ func TestDefaults(t *testing.T) {
 	}
 	// Deliberately above spec §3.2's 12 s: both distillation passes need ~30 s on
 	// real hardware, and 12 s would silently skip verification.
-	if c.Budget != 35*time.Second {
-		t.Errorf("budget = %s, want 35s", c.Budget)
+	if c.Budget != 60*time.Second {
+		t.Errorf("budget = %s, want 60s", c.Budget)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestTimeoutAcceptsBareSecondsAndDurations(t *testing.T) {
 	// commit with no time limit is the one failure mode we cannot allow.
 	for _, bad := range []string{"", "soon", "0", "-5"} {
 		c := Load(nil, env(map[string]string{"CAIRN_TIMEOUT": bad}))
-		if c.Budget != 35*time.Second {
+		if c.Budget != 60*time.Second {
 			t.Errorf("CAIRN_TIMEOUT=%q gave %s, want the default", bad, c.Budget)
 		}
 	}

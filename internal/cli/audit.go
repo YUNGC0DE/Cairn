@@ -47,7 +47,7 @@ func cmdAudit(env *Env, args []string) error {
 	out := fs.String("out", "", "write the full corpus as JSON to this file")
 	noVerify := fs.Bool("no-verify", false, "skip verification (faster, but no confabulation rate)")
 	model := fs.String("model", "", "model to distil with")
-	budget := fs.Duration("budget", 90*time.Second, "per-commit time budget (audit is not a hook, so it can be generous)")
+	budget := fs.Duration("budget", 90*time.Second, "per-session time budget (×N sessions; audit is not a hook, so it can be generous)")
 	verbose := fs.Bool("v", false, "print every record, not just the summary")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -151,6 +151,7 @@ func cmdAudit(env *Env, args []string) error {
 				Budget:       *budget,
 				Model:        *model,
 				VerifyModel:  cfg.VerifyModel,
+				Effort:       cfg.Effort,
 				PromptBudget: cfg.PromptBudget,
 				SkipVerify:   *noVerify,
 			})

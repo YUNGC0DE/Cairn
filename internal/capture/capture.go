@@ -21,11 +21,12 @@ import (
 	"github.com/YUNGC0DE/Cairn/internal/transcript"
 	"github.com/YUNGC0DE/Cairn/internal/transcript/claudecode"
 	"github.com/YUNGC0DE/Cairn/internal/transcript/cursorcli"
+	"github.com/YUNGC0DE/Cairn/internal/transcript/cursoride"
 )
 
 // Parsers returns every registered transcript parser.
 func Parsers() []transcript.Parser {
-	return []transcript.Parser{claudecode.New(), cursorcli.New()}
+	return []transcript.Parser{claudecode.New(), cursorcli.New(), cursoride.New()}
 }
 
 // ParserByName returns a single parser, or nil.
@@ -174,7 +175,13 @@ func hasSignal(s *transcript.Session) bool {
 // TranscriptPointer is the sha256 of a transcript's current bytes. Cairn stores
 // this pointer and never the transcript itself (spec §4.3): the content stays on
 // the user's disk, secrets never enter git history.
+//
+// A parser whose sessions share one store computes its own pointer: hashing the
+// file would hash every other conversation with it.
 func TranscriptPointer(ref transcript.Ref) string {
+	if p, ok := ParserByName(ref.Agent).(transcript.Pointerer); ok {
+		return p.Pointer(ref)
+	}
 	h := sha256.New()
 	info, err := os.Stat(ref.Path)
 	if err != nil {

@@ -27,9 +27,15 @@ const extractInstructions = `Emit a JSON object with exactly these keys:
   "claims": [""]
 }
 
-intent — the reason the change was made, in the author's terms. Never restate
-what the diff does; a reader can see the diff. If the session gives no reason,
-say what the change accomplishes and stop. No filler.
+intent — the reason the change was made, in the author's terms. Its source is
+WHAT THE HUMAN ASKED, below: those are the author's own words, and the last
+requests are the ones this change answers. Never restate what the diff does; a
+reader can see the diff, and a summary of it is not a reason. If the requests
+give no reason, say what the change accomplishes and stop. No filler.
+
+A session often spans several topics — earlier requests may have produced earlier
+commits. Weigh the requests that match the staged diff, and ignore the rest
+rather than blending them into one vague purpose.
 
 decision — only when the session actually settled something: a tradeoff weighed,
 an approach chosen over another, a constraint discovered. Empty string when the
@@ -71,12 +77,21 @@ Style: write for a developer reading ` + "`git log`" + ` two years from now. Do 
 Cairn, transcripts, sessions, agents, or that a tool wrote this. No first person.`
 
 // extractPrompt assembles the extraction request.
-func extractPrompt(sessionText string, in Input) string {
+//
+// The human's requests are their own section, above the session body. They are
+// what the record is supposed to explain, and buried in the transcript they lose
+// to whatever the agent did most recently — which is how a record ends up
+// paraphrasing its own diff.
+func extractPrompt(requests, sessionText string, in Input) string {
 	var b strings.Builder
 	b.WriteString(extractInstructions)
 	if s := strings.TrimSpace(in.Subject); s != "" {
 		fmt.Fprintf(&b, "\n\nThe author already wrote this subject line: %q\n"+
 			"Return \"\" for subject unless you can state the change materially better.", s)
+	}
+	if strings.TrimSpace(requests) != "" {
+		b.WriteString("\n\n=== WHAT THE HUMAN ASKED (verbatim, oldest first) ===\n")
+		b.WriteString(requests)
 	}
 	b.WriteString("\n\n=== AGENT SESSION")
 	b.WriteString(" (may be truncated; oldest turns elided) ===\n")

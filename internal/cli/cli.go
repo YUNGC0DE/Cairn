@@ -64,8 +64,10 @@ func commands() []command {
 			"cairn audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", cmdAudit},
 		{"sessions", "list agent sessions cairn can see for this repository",
 			"cairn sessions [--all]", cmdSessions},
-		{"doctor", "check that everything cairn depends on is present",
+		{"doctor", "check every dependency, and call each engine to prove it answers",
 			"cairn doctor", cmdDoctor},
+		{"logs", "what cairn did on recent commits, and why a record degraded",
+			"cairn logs [-n N] [--path]", cmdLogs},
 		{"version", "print the version", "cairn version", cmdVersion},
 	}
 }
@@ -117,11 +119,12 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  cairn.mode     CAIRN_MODE      message (default) | notes")
 	fmt.Fprintln(w, "  cairn.engine   CAIRN_ENGINE    claude-code | cursor-agent")
 	fmt.Fprintln(w, "  cairn.model    CAIRN_MODEL     model alias passed to the engine")
-	fmt.Fprintln(w, "  cairn.verifyModel               model for the verification pass (default haiku)")
-	fmt.Fprintln(w, "  cairn.timeout  CAIRN_TIMEOUT   seconds a commit may wait (default 35)")
+	fmt.Fprintln(w, "  cairn.verifyModel               model for the verification pass (default: same)")
+	fmt.Fprintln(w, "  cairn.effort   CAIRN_EFFORT     reasoning effort, low…max (claude: low)")
+	fmt.Fprintln(w, "  cairn.timeout  CAIRN_TIMEOUT   seconds per session (default 60; ×N sessions)")
 	fmt.Fprintln(w, "                 CAIRN_SKIP=1    skip cairn for one commit")
 	fmt.Fprintln(w, "                 CAIRN_DEBUG=1   explain what cairn is doing")
-	fmt.Fprintln(w, "                 CAIRN_CLAUDE_ROOT / CAIRN_CURSOR_ROOT")
+	fmt.Fprintln(w, "                 CAIRN_CLAUDE_ROOT / CAIRN_CURSOR_ROOT / CAIRN_CURSOR_IDE_ROOT")
 	fmt.Fprintln(w, "                                 override where transcripts are read from")
 }
 

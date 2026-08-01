@@ -17,10 +17,16 @@ import (
 )
 
 // Request is one single-turn completion.
+//
+// Model and Effort are both engine-specific and both optional: an engine that
+// receives neither answers on its own defaults. `claude` takes an alias plus an
+// `--effort` flag; `cursor-agent` bakes the effort level into the model id and
+// has no flag for it, so it ignores Effort entirely.
 type Request struct {
 	System string        // system prompt; engines that cannot set one prepend it
 	Prompt string        // user prompt
-	Model  string        // engine-specific alias ("sonnet", "haiku", …); "" = engine default
+	Model  string        // engine-specific alias; "" lets the engine choose
+	Effort string        // low|medium|high|xhigh|max, where the engine supports it
 	Budget time.Duration // hard wall-clock limit
 }
 
@@ -30,6 +36,11 @@ type Response struct {
 	Engine  string
 	Model   string
 	Elapsed time.Duration
+
+	// Notes carry anything the caller should put in the record — today, that a
+	// first-choice engine failed and a fallback answered instead. A degradation
+	// nobody is told about is the one that erodes trust in the whole record.
+	Notes []string
 }
 
 // Engine is one headless agent backend.
@@ -59,7 +70,11 @@ func Engines() []Engine {
 	return []Engine{&ClaudeCode{}, &CursorAgent{}}
 }
 
-// Pick selects an engine. name "" or "auto" picks the first available one.
+// Pick selects what to distil with. A named engine is used alone — naming one
+// is a choice, and silently using another would defeat it. "auto" (or nothing)
+// returns every available engine as a Chain, which falls back when the first
+// one fails outright.
+//
 // CAIRN_ENGINE overrides when name is empty.
 func Pick(name string) (Engine, error) {
 	if name == "" {
@@ -76,12 +91,126 @@ func Pick(name string) (Engine, error) {
 		}
 		return nil, fmt.Errorf("llm: unknown engine %q", name)
 	}
+	var found []Engine
 	for _, e := range Engines() {
 		if e.Available() {
-			return e, nil
+			found = append(found, e)
 		}
 	}
-	return nil, ErrNoEngine
+	switch len(found) {
+	case 0:
+		return nil, ErrNoEngine
+	case 1:
+		return found[0], nil
+	default:
+		return &Chain{Engines: found}, nil
+	}
+}
+
+// minFallbackBudget is the least time worth handing a second engine. Below it
+// the fallback would only convert one failure into two and spend the commit's
+// remaining budget doing it.
+const minFallbackBudget = 5 * time.Second
+
+// Chain tries engines in order, moving on when one fails outright.
+//
+// "Available" only means the binary is on PATH — it cannot tell whether the CLI
+// is logged in, in date, or within its quota. Those failures are instant, so
+// the cost of trying the next engine is a process spawn, while the cost of not
+// trying is every commit degrading to metadata-only with a working agent
+// installed alongside.
+//
+// Two failures are deliberately *not* retried: a timeout, because the budget
+// that would pay for the retry is exactly what ran out, and a run that left
+// less than minFallbackBudget on the clock.
+type Chain struct{ Engines []Engine }
+
+// Name lists the chain in order, so a record says what could have answered.
+func (c *Chain) Name() string {
+	var names []string
+	for _, e := range c.Engines {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, "→")
+}
+
+// Available reports whether any engine in the chain can run.
+func (c *Chain) Available() bool {
+	for _, e := range c.Engines {
+		if e.Available() {
+			return true
+		}
+	}
+	return false
+}
+
+// Path is where the first available engine was found.
+func (c *Chain) Path() string {
+	for _, e := range c.Engines {
+		if p := e.Path(); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// Complete runs the first engine that answers.
+func (c *Chain) Complete(ctx context.Context, req Request) (*Response, error) {
+	var notes, failures []string
+	var lastErr error
+	start := time.Now()
+	for i, e := range c.Engines {
+		if !e.Available() {
+			continue
+		}
+		attempt := req
+		if i > 0 {
+			// A model alias belongs to the engine it was configured for: "haiku"
+			// means nothing to cursor-agent. The fallback runs on its own defaults,
+			// and says so rather than failing on a name it cannot resolve.
+			if attempt.Model != "" {
+				notes = append(notes, fmt.Sprintf(
+					"model %q was configured for %s; %s ran on its own default instead",
+					attempt.Model, c.Engines[0].Name(), e.Name()))
+				attempt.Model = ""
+			}
+			if req.Budget > 0 {
+				attempt.Budget = req.Budget - time.Since(start)
+				if attempt.Budget < minFallbackBudget {
+					notes = append(notes, fmt.Sprintf(
+						"no time left to try %s after %s failed", e.Name(), c.Engines[i-1].Name()))
+					break
+				}
+			}
+		}
+		resp, err := e.Complete(ctx, attempt)
+		if err == nil {
+			resp.Notes = append(notes, resp.Notes...)
+			return resp, nil
+		}
+		lastErr = err
+		failures = append(failures, fmt.Sprintf("%s: %v", e.Name(), err))
+		if errors.Is(err, ErrTimeout) || ctx.Err() != nil {
+			// The budget is what ran out; a retry cannot fit in what is left.
+			// Wrapping keeps errors.Is(…, ErrTimeout) true for the caller, which
+			// is what distinguishes "too slow" from "broken" in the record.
+			if len(failures) > 1 {
+				return nil, fmt.Errorf("%w (%s)", err, strings.Join(failures[:len(failures)-1], "; "))
+			}
+			return nil, err
+		}
+		notes = append(notes, fmt.Sprintf("engine %s failed: %v", e.Name(), err))
+	}
+	switch {
+	case lastErr == nil:
+		return nil, ErrNoEngine
+	case len(failures) > 1:
+		// Every engine is named. Reporting only the last one hides that the
+		// preferred engine is broken, which is the thing worth fixing.
+		return nil, fmt.Errorf("all engines failed — %s", strings.Join(failures, "; "))
+	default:
+		return nil, lastErr
+	}
 }
 
 // ExtractJSON pulls the first complete JSON object out of a model response,

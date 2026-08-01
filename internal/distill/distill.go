@@ -123,16 +123,22 @@ type Result struct {
 
 // Options tune a distillation run.
 type Options struct {
-	// Budget is the total wall-clock allowance for both passes. A commit must
-	// never hang: when the budget runs out we degrade, we do not wait.
+	// Budget is the wall-clock allowance for one session's extraction (and the
+	// commit's verification reserve). Like PromptBudget, the unit is one session:
+	// a commit with N relevant sessions may wait up to N×Budget, so committing
+	// ten sessions at once does not starve each of the time a solo commit would
+	// have had. When the budget runs out we degrade, we do not wait.
 	Budget time.Duration
 	// Model overrides the engine default for extraction.
 	Model string
-	// VerifyModel overrides the model used for verification only. Checking claims
-	// against a diff is a narrow mechanical task — a small fast model does it well
-	// and, more importantly, leaves the pass affordable inside a commit's budget.
+	// VerifyModel overrides the model used for verification only, for anyone who
+	// wants the checking pass on something other than the extraction model.
 	VerifyModel string
-	// PromptBudget caps the rendered session text in bytes.
+	// Effort is the reasoning effort both passes run at, where the engine has a
+	// knob for it. Empty lets the engine choose; `claude` defaults to low, which
+	// is the single biggest lever on how long a commit waits.
+	Effort string
+	// PromptBudget caps the rendered session text in bytes, per session.
 	PromptBudget int
 	// SkipVerify disables the second pass (used by `cairn audit --no-verify`).
 	SkipVerify bool
@@ -140,15 +146,16 @@ type Options struct {
 	Trace func(format string, args ...any)
 }
 
-// DefaultBudget is the wall-clock allowance for both passes.
+// DefaultBudget is the wall-clock allowance for one session.
 //
 // Spec §3.2 proposes 12 s. Measured on real hardware, extraction costs ~11 s and
 // verification ~11 s, so 12 s would mean the verification pass — the whole answer
-// to P5 — never runs, and every record would ship "unverified". 35 s fits both with
-// room for a slow response. A record is written once and read for years, so
-// correctness outranks the extra seconds; `cairn.timeout 12` restores the spec's
-// budget for anyone who prefers the faster commit.
-const DefaultBudget = 35 * time.Second
+// to P5 — never runs, and every record would ship "unverified". 60 s fits both with
+// comfortable headroom on a cold prompt cache. A record is written once and read
+// for years, so correctness outranks the extra seconds; `cairn.timeout 12`
+// restores the spec's budget for anyone who prefers the faster commit. Commits
+// with several sessions scale this by the session count.
+const DefaultBudget = 60 * time.Second
 
 // minVerifyBudget is the least time worth starting a verification pass with, and
 // the only slice held back from extraction.
@@ -177,12 +184,37 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 
 	res := &Result{Confidence: MetadataOnly, Engine: engine.Name(), Model: opts.Model}
 	start := time.Now()
-	deadline := start.Add(opts.Budget)
 
-	body := transcript.Compact(in.Sessions, opts.PromptBudget)
-	if strings.TrimSpace(body) == "" {
-		return res, fmt.Errorf("distill: nothing to distill from %d session(s)", len(in.Sessions))
+	// Which sessions actually produced this commit is decided against the staged
+	// file list, not guessed from the transcript: cairn is holding the diff.
+	sessions, skipped := transcript.Relevant(in.Sessions, in.Files)
+	if skipped > 0 {
+		res.Notes = append(res.Notes, fmt.Sprintf(
+			"%d of %d sessions wrote none of the staged files and were left out",
+			skipped, len(in.Sessions)))
 	}
+
+	payloads := transcript.CompactEach(sessions, opts.PromptBudget)
+	empty := 0
+	for _, p := range payloads {
+		res.Notes = append(res.Notes, p.Notes...)
+		if strings.TrimSpace(p.Body) == "" && strings.TrimSpace(p.Requests) == "" {
+			empty++
+		}
+	}
+	if empty == len(payloads) {
+		return res, fmt.Errorf("distill: nothing to distill from %d session(s)", len(sessions))
+	}
+
+	// Time budget is per session, matching PromptBudget: N sessions get N× the
+	// configured allowance so a batch commit is not thinner than N solo ones.
+	n := len(payloads)
+	if n < 1 {
+		n = 1
+	}
+	totalBudget := opts.Budget * time.Duration(n)
+	deadline := start.Add(totalBudget)
+
 	for _, s := range in.Sessions {
 		if s.Degraded {
 			res.Notes = append(res.Notes, fmt.Sprintf("%s session read degraded: %s", s.Agent, s.DegradedReason))
@@ -197,32 +229,39 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 				"(raise cairn.diffBudget)")
 	}
 
-	extractBudget := opts.Budget - minVerifyBudget
-	if extractBudget <= 0 {
-		extractBudget = opts.Budget
+	// Each session gets the same extract slice a solo commit would: the verify
+	// reserve is held once for the commit, not once per session.
+	perSession := opts.Budget - minVerifyBudget
+	if perSession <= 0 {
+		perSession = opts.Budget
 	}
-	trace("extract: %s budget %s", engine.Name(), extractBudget.Round(time.Millisecond))
-	resp, err := engine.Complete(ctx, llm.Request{
-		System: extractSystem,
-		Prompt: extractPrompt(body, in),
-		Model:  opts.Model,
-		Budget: extractBudget,
-	})
+	extractWall := totalBudget - minVerifyBudget
+	if extractWall <= 0 {
+		extractWall = totalBudget
+	}
+	trace("extract: %d session(s) on %s, %s each (%s wall)",
+		len(payloads), engine.Name(), perSession.Round(time.Millisecond), extractWall.Round(time.Millisecond))
+	exs, xres := extractAll(ctx, engine, sessions, payloads, in, opts, perSession, extractWall, trace)
 	res.Elapsed = time.Since(start)
-	if err != nil {
-		res.Notes = append(res.Notes, "extraction failed: "+err.Error())
-		return res, err
+	res.Notes = append(res.Notes, xres.notes...)
+	if xres.model != "" {
+		res.Model = xres.model
 	}
-	res.Model = resp.Model
-	trace("extract: done in %s", resp.Elapsed.Round(time.Millisecond))
+	// Which engine actually answered, not which one was asked first: with a
+	// fallback chain those differ, and the record should name the one that ran.
+	if xres.engine != "" {
+		res.Engine = xres.engine
+	}
+	if len(exs) == 0 {
+		return res, xres.err
+	}
 
-	var ex Extraction
-	if err := llm.ExtractJSON(resp.Text, &ex); err != nil {
-		res.Notes = append(res.Notes, "extraction returned unusable JSON: "+err.Error())
-		return res, err
-	}
-	sanitize(&ex, in)
-	res.Extraction = &ex
+	// Naive concatenation, deliberately. Merging several sessions into one
+	// narrative is a second model call and a second chance to invent; stacking
+	// what each session said keeps every intent attributable to the work that
+	// produced it, exactly as separate commits would have.
+	ex := merge(exs)
+	res.Extraction = ex
 	res.Confidence = Unverified
 
 	if opts.SkipVerify {
@@ -236,20 +275,21 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 	remaining := time.Until(deadline)
 	if remaining < minVerifyBudget {
 		res.Notes = append(res.Notes, fmt.Sprintf(
-			"verification skipped: %s left of a %s budget", remaining.Round(time.Millisecond), opts.Budget))
+			"verification skipped: %s left of a %s budget (%d×%s)",
+			remaining.Round(time.Millisecond), totalBudget, n, opts.Budget))
 		return res, nil
 	}
 
+	// An empty verify model is not a missing setting: each engine has its own
+	// idea of "the small fast one", and only the engine knows the ids it accepts.
 	verifyModel := opts.VerifyModel
-	if verifyModel == "" {
-		verifyModel = llm.DefaultVerifyModel
-	}
 	trace("verify: %d claims, model %s, budget %s",
-		len(ex.Claims), verifyModel, remaining.Round(time.Millisecond))
+		len(ex.Claims), orDefault(verifyModel, "engine default"), remaining.Round(time.Millisecond))
 	vresp, err := engine.Complete(ctx, llm.Request{
 		System: verifySystem,
 		Prompt: verifyPrompt(ex.Claims, in),
 		Model:  verifyModel,
+		Effort: opts.Effort,
 		Budget: remaining,
 	})
 	res.Elapsed = time.Since(start)
@@ -257,6 +297,7 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 		res.Notes = append(res.Notes, "verification failed: "+err.Error())
 		return res, nil // extraction still stands; the record is just unverified
 	}
+	res.Notes = append(res.Notes, vresp.Notes...)
 	var v Verification
 	if err := llm.ExtractJSON(vresp.Text, &v); err != nil {
 		res.Notes = append(res.Notes, "verification returned unusable JSON: "+err.Error())
@@ -265,11 +306,19 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 	attachClaims(&v, ex.Claims)
 	res.Verification = &v
 	res.Confidence = score(&v)
-	trace("verify: done in %s → %s", vresp.Elapsed.Round(time.Millisecond), res.Confidence)
+	trace("verify: done in %s on %s/%s → %s", vresp.Elapsed.Round(time.Millisecond),
+		vresp.Engine, orDefault(vresp.Model, "engine default"), res.Confidence)
 	return res, nil
 }
 
 // score maps verdicts to a confidence label.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
 func score(v *Verification) Confidence {
 	if len(v.Claims) == 0 {
 		return Unverified

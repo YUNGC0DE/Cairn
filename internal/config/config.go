@@ -34,6 +34,7 @@ type Config struct {
 	Engine       string
 	Model        string
 	VerifyModel  string
+	Effort       string
 	Budget       time.Duration
 	PromptBudget int
 	DiffBudget   int
@@ -86,6 +87,9 @@ func Load(repo *gitx.Repo, getenv func(string) string) Config {
 	c.Engine = pick("CAIRN_ENGINE", "cairn.engine")
 	c.Model = pick("CAIRN_MODEL", "cairn.model")
 	c.VerifyModel = pick("CAIRN_VERIFY_MODEL", "cairn.verifyModel")
+	// Reasoning effort, for engines that take one. Left empty the engine decides;
+	// `claude` uses low, because distillation is extraction, not reasoning.
+	c.Effort = pick("CAIRN_EFFORT", "cairn.effort")
 	if v := pick("CAIRN_TIMEOUT", "cairn.timeout"); v != "" {
 		if d, ok := parseDuration(v); ok {
 			c.Budget = d

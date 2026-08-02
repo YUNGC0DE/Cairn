@@ -27,10 +27,22 @@ type Env struct {
 	Getenv func(string) string
 	Dir    string
 
+	// Stdin is where the reactive hooks read their event payload. Tests set it;
+	// in production it is nil and In() falls back to os.Stdin.
+	Stdin io.Reader
+
 	// Engine overrides engine selection. Tests inject a scripted engine here so
 	// the whole hook path can run without spawning an agent; in production it is
 	// nil and selection goes through llm.Pick.
 	Engine llm.Engine
+}
+
+// In returns the reader hooks take their event from.
+func (e *Env) In() io.Reader {
+	if e.Stdin != nil {
+		return e.Stdin
+	}
+	return os.Stdin
 }
 
 // engine resolves the engine to distil with.
@@ -54,6 +66,8 @@ func commands() []command {
 			"cairn init [--force] [--mode message|notes]", cmdInit},
 		{"hook", "run a git hook (invoked by git, not by hand)",
 			"cairn hook prepare-commit-msg <file> [source] [sha]", cmdHook},
+		{"context", "the history of one file, for an agent about to touch it",
+			"cairn context --file <path> [--session <id>] [--reset] [--json]", cmdContext},
 		{"why", "show the records behind a path, and why it looks like this",
 			"cairn why <path>[:line] [-n N]", cmdWhy},
 		{"rejected", "search alternatives that were already turned down",
@@ -78,7 +92,7 @@ func Run(args []string, out, errw io.Writer) error {
 	if err != nil {
 		return err
 	}
-	env := &Env{Out: out, Err: errw, Getenv: os.Getenv, Dir: dir}
+	env := &Env{Out: out, Err: errw, Getenv: os.Getenv, Dir: dir, Stdin: os.Stdin}
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		usage(out)
 		if len(args) == 0 {

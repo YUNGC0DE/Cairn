@@ -29,6 +29,17 @@ func cmdHook(env *Env, args []string) error {
 		return hookPrepareCommitMsg(env, args[1:])
 	case "post-commit":
 		return hookPostCommit(env, args[1:])
+	// The reactive channel. These read a JSON event on stdin and, unlike the
+	// commit hooks, run on every file the agent touches — so they stay silent
+	// unless they have something to say.
+	case "pre-tool-use":
+		return hookPreToolUse(env, args[1:])
+	case "cursor-pre-tool-use":
+		return hookCursorPreToolUse(env, args[1:])
+	case "pre-compact":
+		return hookPreCompact(env, args[1:])
+	case "session-end":
+		return hookSessionEnd(env, args[1:])
 	default:
 		return fmt.Errorf("hook: cairn does not handle %q", args[0])
 	}

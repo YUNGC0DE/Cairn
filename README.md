@@ -5,8 +5,6 @@ Git Cairn adapts git for multi-harness agent coding. Claude Code, Cursor CLI, an
 1. **At edit time** — before the agent changes a file, Cairn hands it the history and logic for that path (prior decisions, rejections, scoped rules). The agent does not have to ask. This is the fix for dirty vibe coding: same bad idea, second try, because the session forgot the first no.
 2. **At session start** — pruned project rules land in `AGENTS.md` / `CLAUDE.md` between markers, under a hard token budget, so every harness sees the same standing guidance.
 
-Clone the repo and both channels travel with it. Product name: **Git Cairn**. Binary and config keys stay `cairn` for now.
-
 ## Why it exists
 
 Vibe coding fails when the agent invents a justification, retries a rejected design, or drifts past a rule that used to live in someone's head. Cairn closes that loop:
@@ -18,8 +16,6 @@ Vibe coding fails when the agent invents a justification, retries a rejected des
 | Standing project rules | `.cairn/invariants.md` → `AGENTS.md` | session start + scoped inject on edit |
 
 `AGENTS.md` alone goes stale and contradicts itself. Path-level recall alone has no shared budgeted rule set. Together they stop the agent from doing the wrong thing twice, and they keep humans from re-explaining the same ADR in every PR.
-
-Delete the binary later: records stay readable in `git log`.
 
 ## How it works
 
@@ -39,7 +35,7 @@ flowchart TB
 | **Capture** | One git hook. Read new transcript tails for this repo (Claude Code, Cursor CLI, Cursor IDE). No agent-side hooks. |
 | **Distill** | Per session: intent, decision, `Rejected`, invariant candidates, open items, next step. Second pass verifies claims against the diff only (never the chat). Write 1–3 KB into the commit or a git note. |
 | **Prune** | Score invariants by confirmation and recency, hard token budget, archive overflow, flag contradictions for a human. The hard part is removing stale rules. |
-| **Recall** | Two peers: (1) inject budgeted rules into `AGENTS.md`; (2) on Edit/Write of path X, push commit records and scoped invariants for X into the agent before it writes. Also `cairn why` / `rejected` / `resume` when a human asks. |
+| **Recall** | Two peers: (1) on the first read or edit of path X in a session, push that path's records into the agent before it decides — this half is built, through the harness's own hooks; (2) inject budgeted rules into `AGENTS.md`. Also `cairn why` / `rejected` when a human asks. |
 
 Transcript bodies stay on your disk. Git stores a checksum pointer. Distillation rides your existing `claude` or `cursor-agent` subscription.
 
@@ -148,9 +144,10 @@ cairn audit -n 20                  # replay history against local transcripts
 |---|---|
 | Capture Claude Code + Cursor CLI + Cursor IDE | Done |
 | Distil + verify on commit (multi-session) | Done |
-| Reactive recall (`why` / `rejected` / `show` / `logs` / `audit`) | Done |
+| Pull commands (`why` / `rejected` / `show` / `logs` / `audit`) | Done |
+| **Recall at edit time** (path history pushed before the agent edits) | Done |
 | `message` / `notes` modes | Done |
-| `resume` / `park` | Todo |
 | Invariants + prune + **`AGENTS.md` inject** | Todo |
-| **Proactive recall on Edit/Write** (path history before the edit) | Todo |
-| Measured confabulation rate + eval harness | Todo |
+| Eval harness (with / without Cairn) | Todo — design in [ROADMAP](ROADMAP.md#the-benchmark) |
+| Measured confabulation rate | Todo — needs a corpus |
+| `resume` / `park` | Deferred |

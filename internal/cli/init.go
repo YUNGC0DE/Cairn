@@ -41,9 +41,10 @@ exit 0
 }
 
 func cmdInit(env *Env, args []string) error {
-	fs := flags("init", "cairn init [--force] [--mode message|notes]", env.Out)
+	fs := flags("init", "cairn init [--force] [--mode message|notes] [--agent claude-code|cursor|all|none]", env.Out)
 	force := fs.Bool("force", false, "back up and replace a hook cairn does not own")
 	mode := fs.String("mode", "", "where records are written: message (default) or notes")
+	agent := fs.String("agent", "all", "wire reactive recall into: claude-code, cursor, all, none")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -68,15 +69,23 @@ func cmdInit(env *Env, args []string) error {
 	}
 	bin, _ = filepath.Abs(bin)
 
+	// The commit hooks and the reactive channel are installed independently, and
+	// a failure in one must not skip the other: they live in different places
+	// (.git/hooks versus the harness's own settings) and fail for different
+	// reasons — a read-only .git, a sandbox, a hooks path owned by someone else.
 	dir, err := hooksDir(repo)
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		fmt.Fprintf(env.Out, "! commit hooks not installed: %v\n", err)
+		dir = ""
+	} else if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Fprintf(env.Out, "! commit hooks not installed: %v\n", err)
+		dir = ""
 	}
 
 	for _, name := range hookNames {
+		if dir == "" {
+			break
+		}
 		path := filepath.Join(dir, name)
 		existing, err := os.ReadFile(path)
 		switch {
@@ -89,16 +98,43 @@ func cmdInit(env *Env, args []string) error {
 			}
 			backup := path + ".cairn-backup"
 			if err := os.WriteFile(backup, existing, 0o755); err != nil {
-				return err
+				fmt.Fprintf(env.Out, "! %s not replaced: %v\n", rel(repo.Root, path), err)
+				continue
 			}
 			fmt.Fprintf(env.Out, "  backed up %s -> %s\n", rel(repo.Root, path), rel(repo.Root, backup))
 		case err != nil && !os.IsNotExist(err):
-			return err
+			fmt.Fprintf(env.Out, "! %s not readable: %v\n", rel(repo.Root, path), err)
+			continue
 		}
 		if err := os.WriteFile(path, []byte(hookScript(bin, name)), 0o755); err != nil {
-			return err
+			fmt.Fprintf(env.Out, "! %s not installed: %v\n", rel(repo.Root, path), err)
+			continue
 		}
 		fmt.Fprintf(env.Out, "✓ installed %s\n", rel(repo.Root, path))
+	}
+
+	// The reactive channel is wired separately from the git hooks: it lives in
+	// the harness's own settings, not in .git/hooks, because it fires on file
+	// access rather than on commit.
+	switch strings.ToLower(*agent) {
+	case "none", "":
+	case "claude-code":
+		if err := installClaudeHooks(env, repo, bin); err != nil {
+			fmt.Fprintf(env.Out, "! %v\n", err)
+		}
+	case "cursor":
+		if err := installCursorHooks(env, repo, bin); err != nil {
+			fmt.Fprintf(env.Out, "! %v\n", err)
+		}
+	case "all":
+		if err := installClaudeHooks(env, repo, bin); err != nil {
+			fmt.Fprintf(env.Out, "! %v\n", err)
+		}
+		if err := installCursorHooks(env, repo, bin); err != nil {
+			fmt.Fprintf(env.Out, "! %v\n", err)
+		}
+	default:
+		return fmt.Errorf("unknown --agent %q: use claude-code, cursor, all or none", *agent)
 	}
 
 	cfg := config.Load(repo, env.Getenv)

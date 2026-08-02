@@ -168,7 +168,7 @@ func TestDisputedClaimIsNamedNotHidden(t *testing.T) {
 
 func TestBodyCapsRejectedList(t *testing.T) {
 	res := sampleResult()
-	for i := 0; i < 9; i++ {
+	for i := 0; i < maxRejectedRendered+5; i++ {
 		res.Extraction.Rejected = append(res.Extraction.Rejected, distill.Rejected{
 			Option: "option", Reason: "reason",
 		})

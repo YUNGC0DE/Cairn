@@ -38,10 +38,21 @@ const (
 
 // Limits keep a record from swallowing the commit message (risk §9: "commit
 // messages bloat, the team revolts").
+//
+// They were originally much tighter — four rejections, three invariants — and
+// that was wrong once the record started being read back into agents. The
+// overflow is only reachable through `cairn rejected`, which is a command a
+// human runs; an agent handed the record on a file touch never sees it. So a
+// rejection dropped here is not "available elsewhere", it is lost from the one
+// channel that would have used it, and lost permanently, because the record is
+// written once and read many times.
+//
+// The bloat risk is real but was never measured, and it is the cheaper of the
+// two: a long commit message is annoying, a forgotten rejection gets rebuilt.
 const (
-	maxRejectedRendered  = 4
-	maxInvariantRendered = 3
-	maxOpenRendered      = 5
+	maxRejectedRendered  = 12
+	maxInvariantRendered = 10
+	maxOpenRendered      = 8
 )
 
 // Meta is the machine-readable half of a record.

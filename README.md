@@ -2,7 +2,7 @@
 <img src="assets/logo.png" alt="Git Cairn" width="70">
 <h1 align="center"><code>git-cairn</code> git-native agent memory</h1>
 <p align="left">
-<u>git-cairn</u> analyzes your agent sessions and extracts decisions, rejected alternatives, and invariants, so your next agent session understands your code better and follows the same rules.
+<code>git-cairn</code> analyzes your agent sessions and extracts decisions, rejected alternatives, and invariants, so your next agent session understands your code better and follows the same rules.
 </p>
 <p>
 <b>Works with</b>

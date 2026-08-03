@@ -1,13 +1,16 @@
 <div align="center">
 <img src="assets/logo.png" alt="Git Cairn" width="70">
-<h1>Git Cairn</h1>
-<p>
-Agent sessions settle things a git diff never shows: why this approach, what was rejected, what has to keep working.<br>
-Cairn writes that into the commit for you, then gives it back to the next agent that opens the file.
+<h1 align="center"><code>git-cairn</code> git-native agent memory</h1>
+<p align="left">
+<u>git-cairn</u> analyzes your agent sessions and extracts decisions, rejected alternatives, and invariants, so your next agent session understands your code better and follows the same rules.
 </p>
 <p>
-<b>Works with Claude Code, Cursor CLI and Cursor IDE.</b><br>
-The Cursor app has no headless mode, so records from Cursor IDE sessions are distilled by the cursor-agent CLI — install it separately.
+<b>Works with</b>
+<img src="https://cdn.simpleicons.org/claude/D97757" width="14" height="14" align="absmiddle" alt="Claude">
+<b>Claude Code</b>
+and
+<img src="https://cdn.simpleicons.org/cursor/A1A1AA" width="14" height="14" align="absmiddle" alt="Cursor">
+<b>Cursor</b>.
 </p>
 <img src="assets/WorkFlow.jpg" width="100%" alt="Git Cairn workflow: a code agent writes code; on git commit Cairn distils why, what was rejected and what must stay true; the next agent is served the relevant context for the file it touches, and does not break what was decided.">
 </div>
@@ -23,6 +26,7 @@ The Cursor app has no headless mode, so records from Cursor IDE sessions are dis
 ```sh
 git add -A
 git commit -m "Add rate limiting to auth endpoints"
+# Or a commit made by the agent during the session
 ```
 
 ```

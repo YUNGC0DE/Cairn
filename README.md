@@ -1,10 +1,16 @@
-# Git Cairn
-
-Agent sessions settle things a git diff never shows: why this approach, what was rejected, what has to keep working.  
+<div align="center">
+<img src="assets/logo.png" alt="Git Cairn" width="70">
+<h1>Git Cairn</h1>
+<p>
+Agent sessions settle things a git diff never shows: why this approach, what was rejected, what has to keep working.<br>
 Cairn writes that into the commit for you, then gives it back to the next agent that opens the file.
-
-**Works with Claude Code, Cursor CLI and Cursor IDE.**  
-The Cursor app has no headless mode, so records from Cursor IDE sessions are distilled by the `cursor-agent` [CLI](https://cursor.com/docs/cli/installation) — install it separately.
+</p>
+<p>
+<b>Works with Claude Code, Cursor CLI and Cursor IDE.</b><br>
+The Cursor app has no headless mode, so records from Cursor IDE sessions are distilled by the cursor-agent CLI — install it separately.
+</p>
+<img src="assets/WorkFlow.jpg" width="100%" alt="Git Cairn workflow: a code agent writes code; on git commit Cairn distils why, what was rejected and what must stay true; the next agent is served the relevant context for the file it touches, and does not break what was decided.">
+</div>
 
 1. An agent writes or changes code.
 2. During the session, decisions get made: why this approach was chosen, what was rejected, which invariants must not be broken.
@@ -12,18 +18,11 @@ The Cursor app has no headless mode, so records from Cursor IDE sessions are dis
 4. When another agent opens the file, Cairn feeds it the relevant context from earlier sessions.
 5. The new agent knows why the code is shaped this way, so it does not re-propose a rejected design or quietly break a rule.
 
-
-
-## Complements `AGENTS.md`, BMAD and spec-driven development
-
-
-
 ## What lands in the commit
 
 ```sh
 git add -A
 git commit -m "Add rate limiting to auth endpoints"
-# Or the agent runs git commit during sessions
 ```
 
 ```
@@ -55,13 +54,10 @@ Cairn-Files: internal/auth/handler.go,internal/auth/limit.go
 Cairn-Transcript: sha256:cf7c0416cdf2331…
 ```
 
-Distillation runs on the `claude` or `cursor-agent` you already have installed. A commit with no agent session behind its  
-files is left untouched. 
+Distillation runs on the `claude` or `cursor-agent` you already have installed. A commit with no agent session behind its files is left untouched.
 
 Two model passes produce it. The first reads the session and writes the record. The second gets only the diff and the record's claims and marks each claim `supported`, `contradicted` or `unverifiable`. 
-
-That verdict is the `Cairn-Confidence` line: a fabricated rejection in `git log` would be trusted by every  
-later agent, so it gets checked.
+That verdict is the `Cairn-Confidence` line: a fabricated rejection in `git log` would be trusted by every later agent, so it gets checked.
 
 Transcripts stay on your disk. The commit holds a `sha256` pointer to one.
 
@@ -101,20 +97,18 @@ Delivery goes through the harness's own hook, so the agent does not need to know
 exists and you do not have to remember to ask. Four rules keep it from becoming noise:
 
 - **Once per file per session**, since re-serving the same block on every read burns
-context. The set resets after a compaction, when the block is genuinely gone.
+  context. The set resets after a compaction, when the block is genuinely gone.
 - **Budgets:** 24 KB per file, 120 KB per session. Newest commits win, and the block
-says what was cut.
+  says what was cut.
 - **The commit prose is passed through as written.** Only `Open:`/`Next:` and the
-`Cairn-*` trailers are stripped.
+  `Cairn-*` trailers are stripped.
 - **Silence is the default.** Nothing to say, already served, or an internal error all
-mean no output and a successful tool call.
-
-
+  mean no output and a successful tool call.
 
 ## Install
 
 Needs `git` and one engine on `PATH`: `claude` (bundled with Claude Code) or
-`[cursor-agent](https://cursor.com/docs/cli/installation)`. Reading Cursor sessions,
+[`cursor-agent`](https://cursor.com/docs/cli/installation). Reading Cursor sessions,
 CLI or IDE, also needs `sqlite3`.
 
 ```sh
@@ -133,19 +127,17 @@ startup.
 
 ## Commands
 
-
-| Command                           | What it does                                               |
-| --------------------------------- | ---------------------------------------------------------- |
-| `git cairn init`                  | Install both halves in this repository                     |
-| `git cairn doctor`                | Check dependencies, call each engine, confirm the hooks    |
-| `git cairn context --file <path>` | Show what an agent is served for a path                    |
-| `git cairn why <path>`            | Decision history for a path                                |
-| `git cairn rejected <query>`      | Search alternatives already turned down                    |
-| `git cairn show [rev]`            | Print one record                                           |
-| `git cairn logs`                  | What the hook did on recent commits                        |
-| `git cairn sessions`              | Sessions Cairn can see here                                |
-| `git cairn audit`                 | Re-distil past commits to measure what the records contain |
-
+| Command | What it does |
+|---|---|
+| `git cairn init` | Install both halves in this repository |
+| `git cairn doctor` | Check dependencies, call each engine, confirm the hooks |
+| `git cairn context --file <path>` | Show what an agent is served for a path |
+| `git cairn why <path>` | Decision history for a path |
+| `git cairn rejected <query>` | Search alternatives already turned down |
+| `git cairn show [rev]` | Print one record |
+| `git cairn logs` | What the hook did on recent commits |
+| `git cairn sessions` | Sessions Cairn can see here |
+| `git cairn audit` | Re-distil past commits to measure what the records contain |
 
 Reading commands are `git log` underneath. No model call, no index, no network.
 `CAIRN_SKIP=1 git commit` skips one commit; `cairn.enabled=false` turns it off for a
@@ -153,6 +145,13 @@ repository.
 
 Sources: Claude Code, Cursor CLI and Cursor IDE for transcripts; Claude Code and Cursor
 for delivery, via `.claude/settings.json` and `.cursor/hooks.json`, both project-scoped.
+
+## Complements `AGENTS.md`, BMAD and spec-driven development
+
+<p align="center">
+  <img src="assets/where-it-fits.png" width="100%"
+       alt="Pyramid of four context layers, widest at the bottom. Specs and method: whole project, before the code exists — spec-driven development, BMAD, PRDs, roadmaps. Standing rules: whole repo — AGENTS.md, CLAUDE.md, .cursor/rules, skills, maintained by hand. Written decisions: one decision, written on purpose — ADRs, design docs, PR descriptions. Git Cairn at the top: one file, one commit, automatic — why this approach, what was rejected, what must keep working, distilled from the agent session into the commit and served back when an agent opens the file. The three lower layers are authored deliberately; the top layer is a by-product of work you were already doing.">
+</p>
 
 ## License
 

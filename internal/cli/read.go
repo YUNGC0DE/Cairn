@@ -160,20 +160,14 @@ func cmdShow(env *Env, args []string) error {
 
 func printRecord(env *Env, r *record.Record) {
 	fmt.Fprintf(env.Out, "%s  %s\n", r.Short, r.Subject)
-	if r.Intent != "" {
-		fmt.Fprintln(env.Out, indent(wrapText(r.Intent, 72), "  "))
+	for _, w := range r.Why {
+		fmt.Fprintln(env.Out, indent(wrapText("why: "+w, 72), "  "))
 	}
 	for _, rej := range r.Rejected {
 		fmt.Fprintln(env.Out, indent(wrapText("rejected: "+rej, 72), "  "))
 	}
 	for _, inv := range r.Invariants {
 		fmt.Fprintln(env.Out, indent(wrapText("invariant: "+inv, 72), "  "))
-	}
-	for _, o := range r.Open {
-		fmt.Fprintln(env.Out, indent(wrapText("open: "+o, 72), "  "))
-	}
-	if r.Next != "" {
-		fmt.Fprintln(env.Out, indent(wrapText("next: "+r.Next, 72), "  "))
 	}
 	for _, d := range r.Disputed {
 		fmt.Fprintln(env.Out, indent(wrapText("⚠ unconfirmed: "+d, 72), "  "))

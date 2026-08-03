@@ -143,9 +143,9 @@ func TestContextExplainsItselfToTheAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"do not propose it again",   // what Rejected means
-		"a property this code must", // what Invariant means
-		"can be out of date",        // that memory is not authority
+		"do not propose it again", // what rejected means
+		"a rule this code must",   // what invariant means
+		"can be out of date",      // that memory is not authority
 		"the code is what is true",
 	} {
 		if !strings.Contains(out, want) {
@@ -153,7 +153,7 @@ func TestContextExplainsItselfToTheAgent(t *testing.T) {
 		}
 	}
 	// The explanation must come before what it explains.
-	if strings.Index(out, "How to read this") > strings.Index(out, "Rejected:") {
+	if strings.Index(out, "Each entry is one commit") > strings.Index(out, "Rejected:") {
 		t.Fatalf("instructions must precede the history:\n%s", out)
 	}
 }

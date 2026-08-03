@@ -250,20 +250,18 @@ func auditReport(env *Env, results []auditOutcome, verbose bool) {
 				fmt.Fprintln(env.Out)
 				continue
 			}
-			if r.Extract.Intent != "" {
-				fmt.Fprintln(env.Out, indent(wrapText(r.Extract.Intent, 72), "  "))
+			for _, w := range r.Extract.Why {
+				fmt.Fprintln(env.Out, indent(wrapText("why: "+w, 72), "  "))
 			}
 			for _, rej := range r.Extract.Rejected {
-				fmt.Fprintln(env.Out, indent(wrapText("rejected: "+rej.Option+" — "+rej.Reason, 72), "  "))
+				fmt.Fprintln(env.Out, indent(wrapText("rejected: "+rej.Option+" — "+rej.Because, 72), "  "))
 			}
 			for _, inv := range r.Extract.Invariants {
-				fmt.Fprintln(env.Out, indent(wrapText("invariant: "+inv.Text, 72), "  "))
-			}
-			for _, o := range r.Extract.OpenItems {
-				fmt.Fprintln(env.Out, indent(wrapText("open: "+o, 72), "  "))
-			}
-			if r.Extract.NextStep != "" {
-				fmt.Fprintln(env.Out, indent(wrapText("next: "+r.Extract.NextStep, 72), "  "))
+				line := "invariant: " + inv.Rule
+				if len(inv.Scope) > 0 {
+					line += " (" + strings.Join(inv.Scope, ", ") + ")"
+				}
+				fmt.Fprintln(env.Out, indent(wrapText(line, 72), "  "))
 			}
 			if r.Verify != nil {
 				for _, c := range r.Verify.Claims {

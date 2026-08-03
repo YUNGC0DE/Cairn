@@ -85,12 +85,13 @@ func extractAll(ctx context.Context, engine llm.Engine, sessions []*transcript.S
 			})
 			r := result{i: i, resp: resp, err: err, spent: time.Since(start)}
 			if err == nil {
-				var ex Extraction
-				if jsonErr := llm.ExtractJSON(resp.Text, &ex); jsonErr != nil {
+				var wire extraction
+				if jsonErr := llm.ExtractJSON(resp.Text, &wire); jsonErr != nil {
 					r.err = fmt.Errorf("unusable JSON: %w", jsonErr)
 				} else {
-					sanitize(&ex, in)
-					r.ex = &ex
+					ex := wire.toExtraction()
+					sanitize(ex, in)
+					r.ex = ex
 				}
 			}
 			results[i] = r
@@ -128,80 +129,62 @@ func extractAll(ctx context.Context, engine llm.Engine, sessions []*transcript.S
 
 // merge stacks what each session produced into one record.
 //
-// Prose is concatenated in session order — the same paragraphs separate commits
-// would have carried. Lists are concatenated and deduplicated, because two
-// sessions that rejected the same option said one thing, not two. next_step
-// comes from the newest session: it is the only field where a later session
-// genuinely supersedes an earlier one.
-func merge(exs []*Extraction) *Extraction {
+// Still naive concatenation rather than a second model call: a summarising pass
+// is another chance to invent, and it would blur which session wanted what. What
+// changed is that concatenation is no longer blind. Sessions behind one commit are
+// usually one person circling one problem, so each independent extraction restates
+// the same intention in its own words; joining them verbatim is how a record ends
+// up saying the same thing four times, which is the single most common complaint
+// about these records. Near-duplicates are folded here (see similar.go), and each
+// distinct intention is kept as its own entry rather than glued into one
+// paragraph — two sessions that wanted different things did not want one blended
+// thing.
+func merge(exs []*Extraction) (*Extraction, []string) {
 	if len(exs) == 1 {
-		return exs[0]
+		return exs[0], nil
 	}
 	out := &Extraction{}
-	seenRejected := map[string]bool{}
-	seenInvariant := map[string]bool{}
-	seenOpen := map[string]bool{}
-	var intents, decisions []string
-
 	for _, ex := range exs {
-		if s := strings.TrimSpace(ex.Intent); s != "" {
-			intents = append(intents, s)
-		}
-		if s := strings.TrimSpace(ex.Decision); s != "" {
-			decisions = append(decisions, s)
-		}
-		for _, r := range ex.Rejected {
-			if k := strings.ToLower(strings.TrimSpace(r.Option)); k != "" && !seenRejected[k] {
-				seenRejected[k] = true
-				out.Rejected = append(out.Rejected, r)
-			}
-		}
-		for _, iv := range ex.Invariants {
-			if k := strings.ToLower(strings.TrimSpace(iv.Text)); k != "" && !seenInvariant[k] {
-				seenInvariant[k] = true
-				out.Invariants = append(out.Invariants, iv)
-			}
-		}
-		for _, o := range ex.OpenItems {
-			if k := strings.ToLower(strings.TrimSpace(o)); k != "" && !seenOpen[k] {
-				seenOpen[k] = true
-				out.OpenItems = append(out.OpenItems, o)
-			}
-		}
+		out.Why = append(out.Why, ex.Why...)
+		out.Rejected = append(out.Rejected, ex.Rejected...)
+		out.Invariants = append(out.Invariants, ex.Invariants...)
 		out.Claims = append(out.Claims, ex.Claims...)
-		if s := strings.TrimSpace(ex.NextStep); s != "" {
-			out.NextStep = s
-		}
 	}
-	out.Intent = strings.Join(intents, "\n\n")
-	out.Decision = strings.Join(decisions, "\n\n")
-	// The author's own subject wins over several sessions' guesses at one.
-	out.Subject = ""
-	out.Claims = dedupClaims(out.Claims)
-	return out
+	rejectedIn, invariantsIn := len(out.Rejected), len(out.Invariants)
+	why, droppedWhy := mergeWhy(out.Why)
+	out.Why = why
+	out.Rejected = dedupRejected(out.Rejected)
+	out.Invariants = dedupInvariants(out.Invariants)
+	out.Claims = dedupStrings(out.Claims)
+	if len(out.Claims) > maxMergedClaims {
+		out.Claims = out.Claims[:maxMergedClaims]
+	}
+
+	// Say what the merge removed. A record that silently drops one session's
+	// account of what was wanted looks complete and is not, and the user is the
+	// only one who can tell whether that session mattered.
+	var notes []string
+	if droppedWhy > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"%d of %d sessions restated an intention already recorded; theirs was left out",
+			droppedWhy, len(exs)))
+	}
+	if n := rejectedIn - len(out.Rejected); n > 0 {
+		notes = append(notes, fmt.Sprintf("%d rejected alternatives were the same option worded twice", n))
+	}
+	if n := invariantsIn - len(out.Invariants); n > 0 {
+		notes = append(notes, fmt.Sprintf("%d invariants were the same rule worded twice", n))
+	}
+	return out, notes
 }
 
-func dedupClaims(claims []string) []string {
-	seen := map[string]bool{}
-	out := claims[:0]
-	for _, c := range claims {
-		k := strings.ToLower(strings.TrimSpace(c))
-		if k == "" || seen[k] {
-			continue
-		}
-		seen[k] = true
-		out = append(out, c)
-	}
-	// Verification costs one line per claim and a reader's patience; keep the
-	// sharpest handful rather than every session's full set.
-	if len(out) > maxMergedClaims {
-		out = out[:maxMergedClaims]
-	}
-	return out
-}
-
-// maxMergedClaims caps what the verification pass is asked to check.
-const maxMergedClaims = 10
+// maxMergedClaims caps what the verification pass is asked to check. Claims are
+// the only field where a merged commit is capped: they are consumed by one model
+// call, and a list long enough to crowd out the diff makes every verdict worse.
+// Rejections and invariants are not capped here — a commit that really spans four
+// sessions carries what four commits would have, and a rejection dropped at this
+// point is not stored anywhere else.
+const maxMergedClaims = 8
 
 func short(s string) string {
 	if len(s) > 8 {

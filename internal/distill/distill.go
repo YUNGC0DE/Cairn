@@ -38,38 +38,61 @@ const (
 	MetadataOnly Confidence = "metadata-only"
 )
 
-// Rejected is an alternative that was considered and turned down.
+// Rejected is an alternative that was considered and turned down. Because is the
+// half that makes it useful: an option with no reason reads as a prohibition and
+// gets re-litigated by the first agent that disagrees with it.
 type Rejected struct {
-	Option string `json:"option"`
-	Reason string `json:"reason"`
+	Option  string `json:"option"`
+	Because string `json:"because"`
 }
 
-// InvariantCandidate is a durable project rule proposed by a session. It lives in
-// the commit that established it and is scoped to paths, so it reaches an agent
+// Invariant is a durable project rule established by a session. It lives in the
+// commit that established it and is scoped to paths, so it reaches an agent
 // through the same reactive channel as the rest of the record — there is no
 // separate rules file, and nothing scores or retires it behind your back.
-type InvariantCandidate struct {
-	Text  string   `json:"text"`
+type Invariant struct {
+	Rule  string   `json:"rule"`
 	Scope []string `json:"scope"`
 }
 
-// Extraction is the schema the first pass must produce.
+// Extraction is the schema the first pass must produce. Four fields, and three of
+// them are routinely empty.
 //
-// OpenItems and NextStep are the state of the work at that moment, written for a
-// human reading `git log`; the reactive block cuts them, because by then that
-// state has usually been overtaken. They are kept because they cost one prompt
-// paragraph and cannot be backfilled — the transcript is gone by the time anyone
-// wants them — and because whether serving them helps is a measurable question,
-// not a settled one.
+// It used to have eight. `subject` was extracted, sanitised and then never
+// rendered anywhere — a field the model paid for and no reader ever saw.
+// `decision` overlapped `intent` so heavily that merging several sessions
+// produced the same paragraph three times in slightly different words, and what
+// it carried that intent did not — the option that lost — is what Rejected is
+// for. `open_items` and `next_step` described the state of the work at one
+// instant; that state is stale before the next commit lands, and the reactive
+// channel was already cutting both before serving a record, so they were written
+// for nobody.
 type Extraction struct {
-	Subject    string               `json:"subject"`
-	Intent     string               `json:"intent"`
-	Decision   string               `json:"decision"`
-	Rejected   []Rejected           `json:"rejected"`
-	Invariants []InvariantCandidate `json:"invariants"`
-	OpenItems  []string             `json:"open_items"`
-	NextStep   string               `json:"next_step"`
-	Claims     []string             `json:"claims"`
+	// Why is what the human wanted and why they wanted it, 2-4 sentences. Merged
+	// records hold one entry per session, which is why it is a list: two sessions
+	// that wanted different things did not want one blended thing.
+	Why        []string    `json:"why"`
+	Rejected   []Rejected  `json:"rejected"`
+	Invariants []Invariant `json:"invariants"`
+	Claims     []string    `json:"claims"`
+}
+
+// extraction is the wire form of Extraction. The model answers with one "why"
+// string; only merging across sessions produces several, and asking a model for
+// a list of one is asking for a list of three.
+type extraction struct {
+	Why        string      `json:"why"`
+	Rejected   []Rejected  `json:"rejected"`
+	Invariants []Invariant `json:"invariants"`
+	Claims     []string    `json:"claims"`
+}
+
+func (e *extraction) toExtraction() *Extraction {
+	out := &Extraction{Rejected: e.Rejected, Invariants: e.Invariants, Claims: e.Claims}
+	if w := strings.TrimSpace(e.Why); w != "" {
+		out.Why = []string{w}
+	}
+	return out
 }
 
 // ClaimStatus is a verification verdict for one claim.
@@ -263,8 +286,9 @@ func Run(ctx context.Context, engine llm.Engine, in Input, opts Options) (*Resul
 	// narrative is a second model call and a second chance to invent; stacking
 	// what each session said keeps every intent attributable to the work that
 	// produced it, exactly as separate commits would have.
-	ex := merge(exs)
+	ex, mergeNotes := merge(exs)
 	res.Extraction = ex
+	res.Notes = append(res.Notes, mergeNotes...)
 	res.Confidence = Unverified
 
 	if opts.SkipVerify {
@@ -378,84 +402,152 @@ func (r *Result) DisputedClaims() []ClaimVerdict {
 	return out
 }
 
-// sanitize enforces the limits the prompt asks for but a model may exceed, and
-// strips the failure modes seen most often: a restated subject, an empty
-// rejected entry, an invariant that is really a one-off instruction.
+// sanitize enforces what the prompt asks for but a model may not deliver.
+//
+// The split of labour is deliberate: the prompt decides what is worth saying,
+// this decides what is well-formed. Everything here is a check a reader could
+// run without knowing the session — length, emptiness, a rejection missing its
+// reason, a rule phrased as a report of this very commit. Semantic judgement
+// stays in the prompt, because a regex that guesses at meaning silently deletes
+// the one rejection that mattered.
 func sanitize(ex *Extraction, in Input) {
-	ex.Subject = firstLine(strings.TrimSpace(ex.Subject))
-	if len(ex.Subject) > maxSubject {
-		ex.Subject = ""
+	why := ex.Why[:0]
+	for _, w := range ex.Why {
+		if w = clean(w, maxWhy); w != "" && !restatesSubject(w, in.Subject) {
+			why = append(why, w)
+		}
 	}
-	if strings.EqualFold(ex.Subject, strings.TrimSpace(in.Subject)) {
-		ex.Subject = ""
-	}
-	ex.Intent = clean(ex.Intent, maxIntent)
-	ex.Decision = clean(ex.Decision, maxDecision)
+	ex.Why = why
 
 	rej := ex.Rejected[:0]
 	for _, r := range ex.Rejected {
-		r.Option = clean(r.Option, 160)
-		r.Reason = clean(r.Reason, 400)
-		if r.Option == "" || r.Reason == "" {
-			continue // half a rejection is worse than none: it invites re-litigation
+		r.Option = clean(r.Option, maxOption)
+		r.Because = clean(r.Because, maxBecause)
+		switch {
+		case r.Option == "" || r.Because == "":
+			// Half a rejection is worse than none: with no reason it reads as a
+			// prohibition, and the next agent either obeys it blindly or re-opens it.
+			continue
+		case emptyReason(r.Because):
+			// "Not chosen" is not a reason. The prompt says so; models still do it.
+			continue
+		case sameThing(r.Option, r.Because):
+			continue // the reason merely repeats the option
 		}
 		rej = append(rej, r)
 	}
-	ex.Rejected = rej
+	ex.Rejected = dedupRejected(rej)
+	if len(ex.Rejected) > maxRejectedPerSession {
+		ex.Rejected = ex.Rejected[:maxRejectedPerSession]
+	}
 
 	inv := ex.Invariants[:0]
 	for _, c := range ex.Invariants {
-		c.Text = clean(c.Text, 240)
-		if c.Text == "" {
+		c.Rule = clean(c.Rule, maxRule)
+		if c.Rule == "" || describesThisChange(c.Rule) {
 			continue
 		}
 		c.Scope = normalizeScope(c.Scope)
 		inv = append(inv, c)
 	}
-	ex.Invariants = inv
-
-	open := ex.OpenItems[:0]
-	for _, o := range ex.OpenItems {
-		if o = clean(o, 200); o != "" {
-			open = append(open, o)
-		}
+	ex.Invariants = dedupInvariants(inv)
+	if len(ex.Invariants) > maxInvariantsPerSession {
+		ex.Invariants = ex.Invariants[:maxInvariantsPerSession]
 	}
-	if len(open) > maxOpenItems {
-		open = open[:maxOpenItems]
-	}
-	ex.OpenItems = open
-	ex.NextStep = clean(ex.NextStep, 200)
 
 	claims := ex.Claims[:0]
 	for _, c := range ex.Claims {
-		if c = clean(c, 300); c != "" {
+		if c = clean(c, maxClaim); c != "" {
 			claims = append(claims, c)
 		}
 	}
 	if len(claims) > maxClaims {
 		claims = claims[:maxClaims]
 	}
-	ex.Claims = claims
+	ex.Claims = dedupStrings(claims)
+}
+
+// restatesSubject drops a "why" that is the author's own subject line back again.
+// It happens when a session's requests carry no reason at all, and it is the one
+// case where the record is strictly worse than silence: the reader has the
+// subject one line above.
+func restatesSubject(why, subject string) bool {
+	subject = strings.TrimSpace(subject)
+	return subject != "" && sameThing(why, subject)
+}
+
+// emptyReason recognises a "because" that says only that the option lost.
+//
+// These are the reasons that make a record unusable: a later agent reading "not
+// chosen" learns that someone once said no, and nothing about whether the no
+// still applies. The list is short and literal on purpose — it matches phrases
+// that carry no cause at all, not phrases that merely mention a person.
+func emptyReason(s string) bool {
+	t := strings.ToLower(strings.TrimRight(s, ". "))
+	for _, dead := range []string{
+		"not chosen", "was not chosen", "not selected", "was not selected",
+		"rejected", "was rejected", "declined", "was declined",
+		"deferred", "was deferred", "postponed", "out of scope",
+		"the author preferred otherwise", "author preference", "user preference",
+		"preference", "not needed", "no reason given", "unclear", "n/a",
+	} {
+		if t == dead {
+			return true
+		}
+	}
+	return false
+}
+
+// describesThisChange rejects an "invariant" that is really a report of the
+// commit it sits in. A rule has to constrain work that has not happened yet; one
+// that talks about "this change" constrains nothing and will be read by every
+// future agent as though it did.
+func describesThisChange(s string) bool {
+	t := strings.ToLower(s)
+	for _, marker := range []string{
+		"this change", "this commit", "this session", "this pr", "this patch",
+		"was added", "were added", "was fixed", "were fixed",
+		"was renamed", "were renamed", "was raised", "were raised",
+		"has been added", "have been added",
+	} {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeScope(scope []string) []string {
 	out := scope[:0]
+	seen := map[string]bool{}
 	for _, s := range scope {
 		s = strings.TrimSpace(s)
-		if s == "" || s == "*" || s == "**" {
+		if s == "" || s == "*" || s == "**" || s == "." || s == "/" || seen[s] {
 			continue // a scope covering everything carries no information
 		}
+		seen[s] = true
 		out = append(out, s)
+	}
+	if len(out) > maxScope {
+		out = out[:maxScope]
 	}
 	return out
 }
 
+// Per-session caps. They are the same numbers the prompt states, enforced here
+// because a model that ignores "at most three" ignores it by a wide margin.
+// Merging several sessions may exceed them; that is the merge's business, since a
+// commit spanning four sessions legitimately carries more than one did.
 const (
-	maxSubject   = 72
-	maxIntent    = 500
-	maxDecision  = 700
-	maxClaims    = 8
-	maxOpenItems = 5
+	maxWhy                  = 600
+	maxOption               = 160
+	maxBecause              = 400
+	maxRule                 = 240
+	maxClaim                = 300
+	maxClaims               = 6
+	maxScope                = 6
+	maxRejectedPerSession   = 3
+	maxInvariantsPerSession = 2
 )
 
 func clean(s string, max int) string {

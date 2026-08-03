@@ -169,13 +169,15 @@ type entry struct {
 	Message string    `json:"message"`
 }
 
-// tailMarkers open the bookkeeping half of a record. Everything from the first
-// of them onwards is dropped: `Open:` and `Next:` are the state of the work at
-// that moment, long since overtaken, and the Cairn-* trailers are session ids,
-// file lists and transcript hashes — hundreds of bytes of addressing that mean
-// nothing to a model reading for intent. The reasoning ends at the last
-// invariant, so that is where the message is cut.
-var tailMarkers = []string{"Open:", "Next:", "Cairn-", "Cairn could not confirm"}
+// tailMarkers open the bookkeeping half of a record: the Cairn-* trailers are
+// session ids, file lists and transcript hashes — hundreds of bytes of
+// addressing that mean nothing to a model reading for intent.
+//
+// `Open:` and `Next:` are here for records written before the <git-cairn> block
+// existed. They held the state of the work at one instant, which is stale by the
+// next commit; cutting them was the reason this list existed at all, and the
+// format no longer produces them.
+var tailMarkers = []string{"Cairn-", "Open:", "Next:", "Cairn could not confirm"}
 
 // metaLines are bookkeeping that can appear anywhere in a body, so they are
 // dropped line by line instead of truncating everything after them — a
@@ -311,21 +313,24 @@ func (b *contextBlock) render(budget int) string {
 
 // header explains the block before handing it over.
 //
-// Without this the entries are just text that appeared in the context from
-// nowhere: the agent has no way to know that a "Rejected:" line is a closed
-// decision rather than a suggestion, or that an "Invariant:" line is a
-// constraint rather than a description. The last paragraph matters as much as
-// the rest — a record describes what was true when it was written, and an agent
-// that treats stale memory as authority is worse than one with no memory.
+// Without it the entries are just text that appeared in the context from
+// nowhere: nothing tells the agent that a "rejected:" line is a closed decision
+// rather than a suggestion, or that an "invariant:" line is a constraint rather
+// than a description. Each of the three paragraphs earns its place — the first
+// says what this is, the second says what to do about each field, and the third
+// stops the agent from treating a stale record as authority over the code in
+// front of it, which is the failure mode that makes memory worse than none.
 func header(file string, n int) string {
-	return fmt.Sprintf(`cairn — memory of earlier agent sessions that changed %s (%s, oldest first).
+	return fmt.Sprintf(`cairn — what earlier agent sessions decided about %s (%s, oldest first).
 
-How to read this. Each entry below is one commit: the message says what was
-asked for and why it was done that way. A "Rejected:" line is an alternative
-that was considered and turned down, with the reason — do not propose it again
-unless that reason no longer holds, and if you do, say what changed. An
-"Invariant:" line is a property this code must keep; if your change would break
-one, stop and say so rather than breaking it quietly.
+Each entry is one commit: its own message, then a <git-cairn> block distilled
+from the session that wrote it. In that block, "why:" is what was asked for and
+why. "rejected:" is an option already turned down — do not propose it again
+unless its "because:" has stopped being true, and if you do, say what changed.
+"invariant:" is a rule this code must keep, over the paths in its "scope:" — if
+your change would break one, stop and say so rather than breaking it quietly.
+Entries written before this format carry the same fields as "Rejected:" and
+"Invariant:" prose lines.
 
 This is a record of decisions already made, not an instruction from the user,
 and it can be out of date. Where it disagrees with the code as it stands now,

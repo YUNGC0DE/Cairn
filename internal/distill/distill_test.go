@@ -64,11 +64,9 @@ func input() Input {
 }
 
 const goodExtraction = `{
-  "subject": "",
-  "intent": "Rate limits on /login and /token stop credential stuffing seen in production logs.",
-  "decision": "An in-memory token bucket is enough at current QPS.",
-  "rejected": [{"option": "Redis-backed sliding window", "reason": "introduces an external datastore ruled out in #412"}],
-  "invariants": [{"text": "No new external datastores without an ADR", "scope": ["internal/**"]}],
+  "why": "Credential stuffing hit /login overnight, and the author wanted repeated attempts from one client stopped without adding infrastructure.",
+  "rejected": [{"option": "Redis-backed sliding window", "because": "introduces an external datastore ruled out in #412"}],
+  "invariants": [{"rule": "No new external datastores without an ADR", "scope": ["internal/**"]}],
   "claims": ["The limiter keeps state in memory, not Redis", "Peak traffic is 340 req/s"]
 }`
 
@@ -192,12 +190,13 @@ func TestBudgetExhaustionSkipsVerification(t *testing.T) {
 
 func TestSanitizeDropsJunk(t *testing.T) {
 	e := &scripted{replies: []string{`{
-	  "subject": "Add rate limiting to auth endpoints",
-	  "intent": "  Intent   with   loose  spacing ",
-	  "decision": "N/A",
-	  "rejected": [{"option": "Redis", "reason": ""}, {"option": "", "reason": "too slow"},
-	               {"option": "Memcached", "reason": "same datastore problem"}],
-	  "invariants": [{"text": "", "scope": []}, {"text": "Rule", "scope": ["*", "internal/**"]}],
+	  "why": "  Why   with   loose  spacing ",
+	  "rejected": [{"option": "Redis", "because": ""}, {"option": "", "because": "too slow"},
+	               {"option": "Kafka", "because": "not chosen"},
+	               {"option": "Memcached", "because": "same datastore problem"}],
+	  "invariants": [{"rule": "", "scope": []},
+	                 {"rule": "Rate limiting was added to /login", "scope": ["internal/**"]},
+	                 {"rule": "Rule", "scope": ["*", "internal/**"]}],
 	  "claims": ["ok", "  ", "none"]
 	}`}}
 	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
@@ -205,25 +204,59 @@ func TestSanitizeDropsJunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := res.Extraction
-	// A subject identical to the author's is noise.
-	if ex.Subject != "" {
-		t.Errorf("subject = %q, want empty (it repeats the author's)", ex.Subject)
+	if len(ex.Why) != 1 || ex.Why[0] != "Why with loose spacing" {
+		t.Errorf("why = %q", ex.Why)
 	}
-	if ex.Intent != "Intent with loose spacing" {
-		t.Errorf("intent = %q", ex.Intent)
-	}
-	if ex.Decision != "" {
-		t.Errorf("decision = %q, want empty (N/A is not a decision)", ex.Decision)
-	}
-	// Half a rejection invites the exact re-litigation the field exists to stop.
+	// Half a rejection invites the exact re-litigation the field exists to stop,
+	// and "not chosen" is not a reason.
 	if len(ex.Rejected) != 1 || ex.Rejected[0].Option != "Memcached" {
-		t.Errorf("rejected = %+v, want only the complete entry", ex.Rejected)
+		t.Errorf("rejected = %+v, want only the complete, reasoned entry", ex.Rejected)
 	}
-	if len(ex.Invariants) != 1 || len(ex.Invariants[0].Scope) != 1 {
-		t.Errorf("invariants = %+v, want one rule scoped to internal/** ('*' carries no information)", ex.Invariants)
+	// "was added to /login" reports this commit; it constrains no future work.
+	if len(ex.Invariants) != 1 || ex.Invariants[0].Rule != "Rule" {
+		t.Errorf("invariants = %+v, want only the rule stated as a rule", ex.Invariants)
+	}
+	if len(ex.Invariants[0].Scope) != 1 {
+		t.Errorf("scope = %q, want '*' dropped as carrying no information", ex.Invariants[0].Scope)
 	}
 	if len(ex.Claims) != 1 || ex.Claims[0] != "ok" {
 		t.Errorf("claims = %+v", ex.Claims)
+	}
+}
+
+// A "why" that only repeats the subject line the reader already has one line
+// above is strictly worse than saying nothing.
+func TestWhyThatRestatesTheSubjectIsDropped(t *testing.T) {
+	e := &scripted{replies: []string{`{"why":"Add rate limiting to the auth endpoints.","rejected":[],"invariants":[],"claims":[]}`}}
+	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Extraction.Why) != 0 {
+		t.Errorf("why = %q, want dropped as a restatement of %q", res.Extraction.Why, input().Subject)
+	}
+}
+
+// The prompt asks for at most three rejections and two invariants. A model that
+// ignores that ignores it by a wide margin, so the cap is enforced here too.
+func TestPerSessionCapsAreEnforced(t *testing.T) {
+	e := &scripted{replies: []string{`{
+	  "why": "x",
+	  "rejected": [{"option":"a","because":"reason one"},{"option":"b","because":"reason two"},
+	               {"option":"c","because":"reason three"},{"option":"d","because":"reason four"}],
+	  "invariants": [{"rule":"first rule that must hold"},{"rule":"second rule that must hold"},
+	                 {"rule":"third rule that must hold"}],
+	  "claims": []
+	}`}}
+	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Extraction.Rejected) != maxRejectedPerSession {
+		t.Errorf("rejected = %d, want %d", len(res.Extraction.Rejected), maxRejectedPerSession)
+	}
+	if len(res.Extraction.Invariants) != maxInvariantsPerSession {
+		t.Errorf("invariants = %d, want %d", len(res.Extraction.Invariants), maxInvariantsPerSession)
 	}
 }
 
@@ -268,51 +301,6 @@ func TestEmptySessionIsAnError(t *testing.T) {
 	}
 	if e.calls != 0 {
 		t.Error("no engine call should be made with nothing to distil")
-	}
-}
-
-func TestOpenItemsAndNextStepAreExtractedAndCleaned(t *testing.T) {
-	e := &scripted{replies: []string{`{
-	  "intent": "Rate limits on /login stop credential stuffing.",
-	  "decision": "",
-	  "rejected": [],
-	  "invariants": [],
-	  "open_items": ["X-RateLimit headers not implemented", "  ", "none",
-	                 "a", "b", "c", "d", "e"],
-	  "next_step": "  Add per-IP limits for /register  ",
-	  "claims": []
-	}`}}
-	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ex := res.Extraction
-	if len(ex.OpenItems) != maxOpenItems {
-		t.Errorf("OpenItems = %#v, want %d after dropping junk and capping", ex.OpenItems, maxOpenItems)
-	}
-	if ex.OpenItems[0] != "X-RateLimit headers not implemented" {
-		t.Errorf("OpenItems[0] = %q", ex.OpenItems[0])
-	}
-	for _, o := range ex.OpenItems {
-		if o == "none" || strings.TrimSpace(o) == "" {
-			t.Errorf("junk survived: %q", o)
-		}
-	}
-	if ex.NextStep != "Add per-IP limits for /register" {
-		t.Errorf("NextStep = %q", ex.NextStep)
-	}
-}
-
-func TestNextStepIsNotInvented(t *testing.T) {
-	// The prompt tells the model to leave it empty; the schema must not turn a
-	// placeholder into a plan.
-	e := &scripted{replies: []string{`{"intent":"x","open_items":[],"next_step":"N/A","claims":[]}`}}
-	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Extraction.NextStep != "" {
-		t.Errorf("NextStep = %q, want empty", res.Extraction.NextStep)
 	}
 }
 

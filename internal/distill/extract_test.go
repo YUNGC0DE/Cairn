@@ -26,7 +26,7 @@ func (p *perSession) Path() string    { return "/fake" }
 
 func (p *perSession) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
 	p.calls.Add(1)
-	if strings.Contains(req.System, "verification") {
+	if strings.Contains(req.System, "verification pass") {
 		return &llm.Response{Text: `{"claims":[]}`, Engine: p.Name()}, nil
 	}
 	who := "unknown"
@@ -37,14 +37,11 @@ func (p *perSession) Complete(_ context.Context, req llm.Request) (*llm.Response
 	}
 	p.prompts = append(p.prompts, who)
 	return &llm.Response{Engine: p.Name(), Text: fmt.Sprintf(`{
-	  "intent": "%s intent",
-	  "decision": "%s decision",
-	  "rejected": [{"option": "%s option", "reason": "%s reason"}],
-	  "invariants": [{"text": "shared rule", "scope": ["internal/**"]}],
-	  "open_items": ["%s open"],
-	  "next_step": "%s next",
+	  "why": "%s wanted the %s thing done for the %s reason",
+	  "rejected": [{"option": "%s option", "because": "%s reason"}],
+	  "invariants": [{"rule": "the shared rule that must always hold", "scope": ["internal/**"]}],
 	  "claims": ["%s claim"]
-	}`, who, who, who, who, who, who, who)}, nil
+	}`, who, who, who, who, who, who)}, nil
 }
 
 func sessionSaying(id, tag, file string) *transcript.Session {
@@ -82,8 +79,8 @@ func TestCommitGranularityDoesNotChangeTheRecord(t *testing.T) {
 		t.Fatalf("extraction calls = %d, want one per session: %v", got, eng.prompts)
 	}
 	for _, tag := range []string{"ALPHA", "BETA"} {
-		if !strings.Contains(res.Extraction.Intent, tag+" intent") {
-			t.Errorf("%s's intent was lost:\n%s", tag, res.Extraction.Intent)
+		if !strings.Contains(strings.Join(res.Extraction.Why, " "), tag+" wanted") {
+			t.Errorf("%s's intent was lost:\n%s", tag, res.Extraction.Why)
 		}
 		var found bool
 		for _, r := range res.Extraction.Rejected {
@@ -99,10 +96,141 @@ func TestCommitGranularityDoesNotChangeTheRecord(t *testing.T) {
 	if n := len(res.Extraction.Invariants); n != 1 {
 		t.Errorf("invariants = %d, want the duplicate merged: %+v", n, res.Extraction.Invariants)
 	}
-	// The newest session owns the next step.
-	if res.Extraction.NextStep != "BETA next" {
-		t.Errorf("next step = %q, want the newest session's", res.Extraction.NextStep)
+	// Two sessions that wanted different things are two entries, not one blended
+	// paragraph.
+	if n := len(res.Extraction.Why); n != 2 {
+		t.Errorf("why entries = %d, want one per distinct intention: %q", n, res.Extraction.Why)
 	}
+}
+
+// Two sessions arguing the same option down produce one entry, not two. Exact
+// dedup caught none of these: measured over this repository's history, 39
+// rejected alternatives across 7 commits included four pairs that were the same
+// option said twice in different words.
+func TestRewordedDuplicatesAreFoldedTogether(t *testing.T) {
+	in := Input{
+		Sessions: []*transcript.Session{
+			sessionSaying("sess-a", "ALPHA", "a.go"),
+			sessionSaying("sess-b", "BETA", "b.go"),
+		},
+		Diff:  "diff --git a/a.go b/a.go\n",
+		Files: []string{"a.go", "b.go"},
+	}
+	res, err := Run(context.Background(), &reworder{}, in, Options{Budget: 30 * time.Second, SkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := res.Extraction
+	if len(ex.Rejected) != 1 {
+		t.Errorf("rejected = %+v, want the same option counted once", ex.Rejected)
+	}
+	// Of two wordings of one rejection, the one that explains more survives.
+	if !strings.Contains(ex.Rejected[0].Because, "5.4GB") {
+		t.Errorf("kept the thinner reason: %q", ex.Rejected[0].Because)
+	}
+	if len(ex.Invariants) != 1 {
+		t.Errorf("invariants = %+v, want one", ex.Invariants)
+	}
+	// Of two wordings of one rule, the scoped one is served to fewer agents.
+	if len(ex.Invariants[0].Scope) == 0 {
+		t.Errorf("kept the unscoped wording, which is served to every file: %+v", ex.Invariants[0])
+	}
+	// The merge says what it folded away, so a thinner record is explainable.
+	if !strings.Contains(strings.Join(res.Notes, " "), "worded twice") {
+		t.Errorf("the fold was silent: %v", res.Notes)
+	}
+}
+
+// Invariants about the same property often share an identifier but little else.
+// Plain token overlap at dupThreshold misses them; the heavy-token check must
+// still leave genuinely different rules ("first" vs "second") alone.
+func TestInvariantRestatementsSharingAnIdentifierAreFolded(t *testing.T) {
+	in := []Invariant{
+		{Rule: "The installed binary name is git-cairn so git discovers it as a subcommand; displayed help must follow argv[0].", Scope: []string{"internal/cli/**"}},
+		{Rule: "Ship the binary as git-cairn so git finds it as a subcommand, keep a cairn symlink, and derive the program name from argv[0].", Scope: []string{"Makefile", "internal/cli/**"}},
+		{Rule: "Help and usage strings must take the program name from argv[0] when the binary base name is git-cairn.", Scope: []string{"internal/cli/**"}},
+		{Rule: "The hook ownership marker must remain # cairn:managed-hook across renames.", Scope: []string{"internal/cli/init.go"}},
+		{Rule: "first rule that must hold", Scope: []string{"a.go"}},
+		{Rule: "second rule that must hold", Scope: []string{"b.go"}},
+	}
+	out := dedupInvariants(in)
+	if len(out) != 4 {
+		t.Fatalf("invariants = %d, want 4 (one git-cairn/argv rule, marker, first, second): %+v", len(out), out)
+	}
+	var gitCairn int
+	for _, inv := range out {
+		if strings.Contains(inv.Rule, "git-cairn") || strings.Contains(inv.Rule, "argv") {
+			gitCairn++
+		}
+	}
+	if gitCairn != 1 {
+		t.Errorf("git-cairn/argv restatements kept = %d, want 1", gitCairn)
+	}
+}
+
+// reworder answers each session with the same content in different words — the
+// pairs are taken from what this repository's own history actually produced.
+type reworder struct{}
+
+func (r *reworder) Name() string    { return "reworder" }
+func (r *reworder) Available() bool { return true }
+func (r *reworder) Path() string    { return "/fake" }
+func (r *reworder) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
+	if strings.Contains(req.Prompt, "ALPHA") {
+		return &llm.Response{Engine: r.Name(), Text: `{
+		  "why": "The budget must be per session so a ten-session commit is not thinner than ten commits.",
+		  "rejected": [{"option": "Snapshot/copy state.vscdb before every read",
+		                "because": "the store measured 5.4GB and copying would dominate the commit hook"}],
+		  "invariants": [{"rule": "Large SQLite stores are opened read-only in place, not snapshotted in a hook",
+		                  "scope": ["internal/sqlitex/**"]}],
+		  "claims": []
+		}`}, nil
+	}
+	return &llm.Response{Engine: r.Name(), Text: `{
+	  "why": "The budget must be per session so a ten-session commit is not thinner than ten separate commits.",
+	  "rejected": [{"option": "Snapshot/copy Cursor's state.vscdb before every read",
+	                "because": "copying is too slow inside a hook"}],
+	  "invariants": [{"rule": "Large SQLite stores are opened read-only in place, never snapshotted in a hook"}],
+	  "claims": []
+	}`}, nil
+}
+
+// N sessions with N different asks keep N why entries. A count/byte cap on why
+// would drop a real intention; only near-verbatim restatements are folded.
+func TestDistinctWhysAreAllKept(t *testing.T) {
+	var sessions []*transcript.Session
+	for _, tag := range []string{"A", "B", "C", "D", "E", "F"} {
+		sessions = append(sessions, sessionSaying("sess-"+tag, tag, tag+".go"))
+	}
+	in := Input{Sessions: sessions, Diff: "diff --git a/A.go b/A.go\n",
+		Files: []string{"A.go", "B.go", "C.go", "D.go", "E.go", "F.go"}}
+	res, err := Run(context.Background(), &distinctWhy{}, in, Options{Budget: 30 * time.Second, SkipVerify: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(res.Extraction.Why); n != len(sessions) {
+		t.Errorf("why entries = %d, want all %d kept: %q", n, len(sessions), res.Extraction.Why)
+	}
+	if n := len(res.Extraction.Rejected); n != len(sessions) {
+		t.Errorf("rejected = %d, want all %d kept", n, len(sessions))
+	}
+}
+
+// distinctWhy gives every session a different intention and a different
+// rejection, so nothing is folded away as a duplicate.
+type distinctWhy struct{ n atomic.Int32 }
+
+func (d *distinctWhy) Name() string    { return "distinct" }
+func (d *distinctWhy) Available() bool { return true }
+func (d *distinctWhy) Path() string    { return "/fake" }
+func (d *distinctWhy) Complete(_ context.Context, _ llm.Request) (*llm.Response, error) {
+	i := d.n.Add(1)
+	return &llm.Response{Engine: d.Name(), Text: fmt.Sprintf(`{
+	  "why": "Intention number %d, which concerns a completely unrelated corner of the project and shares no vocabulary with the others: widget %d needed rewiring.",
+	  "rejected": [{"option": "alternative approach %d to widget %d", "because": "measured %d times slower on the same fixture"}],
+	  "invariants": [],
+	  "claims": []
+	}`, i, i, i, i, i)}, nil
 }
 
 // Time budget is per session, like promptBudget: two sessions must each get the
@@ -147,7 +275,7 @@ func (b *budgetProbe) Complete(_ context.Context, req llm.Request) (*llm.Respons
 	b.mu.Lock()
 	b.budgets = append(b.budgets, req.Budget)
 	b.mu.Unlock()
-	return &llm.Response{Engine: b.Name(), Text: `{"intent":"x","claims":[]}`}, nil
+	return &llm.Response{Engine: b.Name(), Text: `{"why":"x","claims":[]}`}, nil
 }
 
 // A session whose call fails must not take the others' records down with it.
@@ -165,7 +293,7 @@ func TestOneFailedSessionDoesNotLoseTheOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Extraction == nil || !strings.Contains(res.Extraction.Intent, "survivor") {
+	if res.Extraction == nil || !strings.Contains(strings.Join(res.Extraction.Why, " "), "survivor") {
 		t.Fatalf("the session that answered must still produce a record: %+v", res.Extraction)
 	}
 	var said bool
@@ -188,5 +316,5 @@ func (f *flaky) Complete(_ context.Context, req llm.Request) (*llm.Response, err
 	if f.n.Add(1) == 1 {
 		return nil, fmt.Errorf("engine exploded")
 	}
-	return &llm.Response{Engine: f.Name(), Text: `{"intent":"survivor intent","claims":[]}`}, nil
+	return &llm.Response{Engine: f.Name(), Text: `{"why":"survivor intent","claims":[]}`}, nil
 }

@@ -41,11 +41,9 @@ func (s *scripted) Complete(_ context.Context, req llm.Request) (*llm.Response, 
 }
 
 const extractReply = `{
-  "subject": "",
-  "intent": "Rate limits on /login stop the credential stuffing seen in production logs.",
-  "decision": "An in-memory token bucket is enough at current QPS.",
-  "rejected": [{"option": "Redis-backed sliding window", "reason": "adds an external datastore ruled out in #412"}],
-  "invariants": [{"text": "No new external datastores without an ADR", "scope": ["internal/**"]}],
+  "why": "Credential stuffing was hitting /login, and the author wanted repeated attempts from one client stopped without adding a datastore.",
+  "rejected": [{"option": "Redis-backed sliding window", "because": "adds an external datastore ruled out in #412"}],
+  "invariants": [{"rule": "No new external datastores without an ADR", "scope": ["internal/**"]}],
   "claims": ["The limiter keeps state in memory"]
 }`
 
@@ -186,9 +184,13 @@ func TestHookWritesRecordIntoCommitMessage(t *testing.T) {
 		t.Errorf("the author's subject must come first:\n%s", msg)
 	}
 	for _, want := range []string{
-		"credential stuffing",
-		"Rejected: Redis-backed sliding window",
-		"Invariant: No new external datastores",
+		record.OpenTag,
+		record.CloseTag,
+		"why: Credential stuffing",
+		"rejected: Redis-backed sliding window",
+		"because: adds an external datastore",
+		"invariant: No new external datastores",
+		"scope: internal/**",
 		record.TrailerAgent + ": claude-code/claude-opus-5",
 		record.TrailerConfidence + ": verified",
 		record.TrailerFiles + ": internal/auth/limit.go",
@@ -283,7 +285,7 @@ func TestHookDegradesToTrailersWhenExtractionFails(t *testing.T) {
 	if !strings.Contains(msg, record.TrailerTranscript+": sha256:") {
 		t.Errorf("transcript pointer lost:\n%s", msg)
 	}
-	if strings.Contains(msg, "Rejected:") {
+	if strings.Contains(msg, record.OpenTag) {
 		t.Errorf("no prose should be invented:\n%s", msg)
 	}
 	// Nothing was distilled, so nothing may take credit for distilling it.
@@ -486,7 +488,7 @@ func TestNotesModeKeepsMessageCleanAndAttachesNote(t *testing.T) {
 	if note == "" {
 		t.Fatal("no note attached")
 	}
-	for _, want := range []string{"Rejected: Redis-backed sliding window", record.TrailerConfidence + ": verified"} {
+	for _, want := range []string{"rejected: Redis-backed sliding window", record.TrailerConfidence + ": verified"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note missing %q:\n%s", want, note)
 		}
@@ -555,7 +557,7 @@ func TestWhyAndRejectedReadBackTheRecord(t *testing.T) {
 	if err := cmdWhy(h.env, []string{"internal/auth/limit.go"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "credential stuffing") {
+	if !strings.Contains(out.String(), "Credential stuffing") {
 		t.Errorf("cairn why lost the intent:\n%s", out)
 	}
 

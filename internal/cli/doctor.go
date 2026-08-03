@@ -9,18 +9,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/capture"
-	"github.com/YUNGC0DE/Cairn/internal/config"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/llm"
-	"github.com/YUNGC0DE/Cairn/internal/sqlitex"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/claudecode"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/cursorcli"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/cursoride"
+	"github.com/YUNGC0DE/git-cairn/internal/capture"
+	"github.com/YUNGC0DE/git-cairn/internal/config"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/sqlitex"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/claudecode"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursorcli"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
 )
 
 func cmdDoctor(env *Env, args []string) error {
-	fs := flags("doctor", "cairn doctor", env.Out)
+	fs := flags("doctor", prog+" doctor", env.Out)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func cmdDoctor(env *Env, args []string) error {
 			if installedHook(repo, h) {
 				line(ok, "hook "+h, "installed")
 			} else {
-				line(warn, "hook "+h, "missing — run `cairn init`")
+				line(warn, "hook "+h, "missing — run `"+prog+" init`")
 			}
 		}
 	}
@@ -179,7 +179,7 @@ func orDefault(s, def string) string {
 }
 
 func cmdSessions(env *Env, args []string) error {
-	fs := flags("sessions", "cairn sessions [--all]", env.Out)
+	fs := flags("sessions", prog+" sessions [--all]", env.Out)
 	all := fs.Bool("all", false, "list sessions regardless of the last commit time")
 	if err := fs.Parse(args); err != nil {
 		return err

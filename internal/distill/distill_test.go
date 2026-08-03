@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/llm"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // scripted returns canned replies in order, so a two-pass run can be driven
@@ -91,8 +91,7 @@ func TestRunVerifiedPath(t *testing.T) {
 }
 
 // The verification pass must not see the transcript. A verifier that has read
-// the conversation will simply agree with it, which defeats the whole point
-// (spec §2, P5).
+// the conversation will simply agree with it, which defeats the whole point.
 func TestVerifyPassNeverSeesTheTranscript(t *testing.T) {
 	e := &scripted{replies: []string{goodExtraction, `{"claims":[{"index":0,"status":"supported"}]}`}}
 	if _, err := Run(context.Background(), e, input(), Options{Budget: time.Minute}); err != nil {

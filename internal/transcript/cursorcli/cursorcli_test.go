@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/sqlitex"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/sqlitex"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // store builds a Cursor chat directory matching the real on-disk layout: a
@@ -267,7 +267,7 @@ func TestSnapshotDoesNotTouchTheLiveStore(t *testing.T) {
 }
 
 // TestAgainstRealStore runs the parser over the user's actual Cursor chats.
-// Format drift at the vendor is a named risk (spec §9), and a synthetic fixture
+// Format drift at the vendor is a named risk, and a synthetic fixture
 // cannot catch it — so this is the canary. It is opt-in because it depends on
 // data that is not in the repository:
 //

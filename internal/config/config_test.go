@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/testutil"
+	"github.com/YUNGC0DE/git-cairn/internal/testutil"
 )
 
 func env(m map[string]string) func(string) string {
@@ -17,9 +17,9 @@ func TestDefaults(t *testing.T) {
 		t.Error("cairn must be on by default")
 	}
 	if c.Mode != ModeMessage {
-		t.Errorf("mode = %s, want message (spec §4.2 default)", c.Mode)
+		t.Errorf("mode = %s, want message (the default)", c.Mode)
 	}
-	// Deliberately above spec §3.2's 12 s: both distillation passes need ~30 s on
+	// Deliberately above the 12 s the original spec proposed: both distillation passes need ~30 s on
 	// real hardware, and 12 s would silently skip verification.
 	if c.Budget != 60*time.Second {
 		t.Errorf("budget = %s, want 60s", c.Budget)

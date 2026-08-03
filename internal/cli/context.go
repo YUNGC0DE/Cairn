@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 )
 
 // The reactive channel: what an agent is told the moment it touches a file.
@@ -98,7 +98,7 @@ func serveContext(repo *gitx.Repo, req serveRequest) (string, error) {
 
 func cmdContext(env *Env, args []string) error {
 	fs := flags("context",
-		"cairn context --file <path> [--session <id>] [--budget N] [--reset] [--force] [--json]", env.Out)
+		prog+" context --file <path> [--session <id>] [--budget N] [--reset] [--force] [--json]", env.Out)
 	file := fs.String("file", "", "path the agent is about to open or edit")
 	session := fs.String("session", "", "agent session id — a file is served once per session")
 	budget := fs.Int("budget", 0, "max bytes for this injection (default 24000)")

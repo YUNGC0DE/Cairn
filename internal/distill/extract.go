@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/llm"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // maxParallelExtractions bounds how many agent CLIs run at once.

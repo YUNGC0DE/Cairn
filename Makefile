@@ -3,15 +3,27 @@
 export GOCACHE ?= $(HOME)/.cache/go-build
 export CGO_ENABLED ?= 0
 
-BIN := bin/cairn
+# The binary is git-cairn so that git finds it as a subcommand (`git cairn why …`).
+# The cairn symlink next to it keeps the short form working.
+BIN := bin/git-cairn
 PKGS := ./...
+PREFIX ?= /usr/local
 
-.PHONY: all build test vet fmt clean e2e
+.PHONY: all build install uninstall test vet fmt clean e2e
 
 all: build
 
 build:
-	go build -trimpath -o $(BIN) ./cmd/cairn
+	go build -trimpath -o $(BIN) ./cmd/git-cairn
+	ln -sf git-cairn bin/cairn
+
+install: build
+	install -d $(PREFIX)/bin
+	install -m 0755 $(BIN) $(PREFIX)/bin/git-cairn
+	ln -sf git-cairn $(PREFIX)/bin/cairn
+
+uninstall:
+	rm -f $(PREFIX)/bin/git-cairn $(PREFIX)/bin/cairn
 
 vet:
 	go vet $(PKGS)

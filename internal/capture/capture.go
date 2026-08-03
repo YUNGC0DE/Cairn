@@ -1,4 +1,4 @@
-// Package capture is the CAPTURE stage of cairn (spec §3.1): find the agent
+// Package capture is the CAPTURE stage of cairn: find the agent
 // sessions that produced the work being committed, read only what is new, and
 // remember how far we got.
 //
@@ -18,10 +18,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/claudecode"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/cursorcli"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/cursoride"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/claudecode"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursorcli"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
 )
 
 // Parsers returns every registered transcript parser.
@@ -173,7 +173,7 @@ func hasSignal(s *transcript.Session) bool {
 }
 
 // TranscriptPointer is the sha256 of a transcript's current bytes. Cairn stores
-// this pointer and never the transcript itself (spec §4.3): the content stays on
+// this pointer and never the transcript itself: the content stays on
 // the user's disk, secrets never enter git history.
 //
 // A parser whose sessions share one store computes its own pointer: hashing the

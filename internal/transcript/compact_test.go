@@ -164,7 +164,7 @@ func TestRelevantPicksTheSessionsThatWroteTheCommit(t *testing.T) {
 }
 
 func TestStagedPathMatching(t *testing.T) {
-	staged := []string{"internal/auth/limit.go", "cmd/cairn/main.go"}
+	staged := []string{"internal/auth/limit.go", "cmd/git-cairn/main.go"}
 	cases := map[string]bool{
 		"/Users/you/repo/internal/auth/limit.go":     true,
 		"internal/auth/limit.go":                     true,

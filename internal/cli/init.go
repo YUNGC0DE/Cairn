@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/YUNGC0DE/Cairn/internal/config"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/config"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 )
 
 // marker identifies a hook cairn wrote, so re-running init upgrades its own hook
-// and never clobbers somebody else's.
+// and never clobbers somebody else's. It kept its wording when the binary was
+// renamed to git-cairn: a new marker would make the next `init` treat the hooks it
+// installed itself as foreign and refuse to touch them.
 const marker = "# cairn:managed-hook"
 
 // hookNames are the hooks cairn installs.
@@ -32,6 +34,7 @@ func hookScript(bin, hook string) string {
 #                  git config cairn.enabled false  (skip always)
 
 CAIRN=%q
+[ -x "$CAIRN" ] || CAIRN=$(command -v git-cairn 2>/dev/null)
 [ -x "$CAIRN" ] || CAIRN=$(command -v cairn 2>/dev/null)
 [ -n "$CAIRN" ] || exit 0
 
@@ -41,7 +44,7 @@ exit 0
 }
 
 func cmdInit(env *Env, args []string) error {
-	fs := flags("init", "cairn init [--force] [--mode message|notes] [--agent claude-code|cursor|all|none]", env.Out)
+	fs := flags("init", prog+" init [--force] [--mode message|notes] [--agent claude-code|cursor|all|none]", env.Out)
 	force := fs.Bool("force", false, "back up and replace a hook cairn does not own")
 	mode := fs.String("mode", "", "where records are written: message (default) or notes")
 	agent := fs.String("agent", "all", "wire reactive recall into: claude-code, cursor, all, none")
@@ -65,7 +68,7 @@ func cmdInit(env *Env, args []string) error {
 
 	bin, err := os.Executable()
 	if err != nil {
-		bin = "cairn"
+		bin = "git-cairn" // the hook falls back to PATH lookup anyway
 	}
 	bin, _ = filepath.Abs(bin)
 
@@ -145,7 +148,7 @@ func cmdInit(env *Env, args []string) error {
 		fmt.Fprintf(env.Out, "    git push origin %s\n", gitx.NotesRef)
 		fmt.Fprintln(env.Out, "  and `git log --notes=cairn` to read them.")
 	}
-	fmt.Fprintln(env.Out, "\nRun `cairn doctor` to check the rest of the setup.")
+	fmt.Fprintf(env.Out, "\nRun `%s doctor` to check the rest of the setup.\n", prog)
 	return nil
 }
 

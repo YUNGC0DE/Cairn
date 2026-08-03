@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YUNGC0DE/Cairn/internal/testutil"
+	"github.com/YUNGC0DE/git-cairn/internal/testutil"
 )
 
 func runInit(t *testing.T, r *testutil.Repo, args ...string) string {

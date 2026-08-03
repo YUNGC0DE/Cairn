@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/capture"
-	"github.com/YUNGC0DE/Cairn/internal/config"
-	"github.com/YUNGC0DE/Cairn/internal/distill"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/record"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/capture"
+	"github.com/YUNGC0DE/git-cairn/internal/config"
+	"github.com/YUNGC0DE/git-cairn/internal/distill"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/record"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 func cmdHook(env *Env, args []string) error {
@@ -75,7 +75,7 @@ func pendingPath(repo *gitx.Repo) string {
 	return filepath.Join(repo.CairnDir(), "pending.json")
 }
 
-// hookPrepareCommitMsg is CAPTURE + DISTILL (spec §6.1). It must never fail a
+// hookPrepareCommitMsg is CAPTURE + DISTILL. It must never fail a
 // commit and never hang one, so every error path returns nil.
 func hookPrepareCommitMsg(env *Env, args []string) error {
 	if len(args) == 0 {

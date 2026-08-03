@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/sqlitex"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/sqlitex"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // conversation is one composer as the fixture builder takes it.
@@ -422,7 +422,7 @@ func TestLocalPathRejectsRemoteURIs(t *testing.T) {
 }
 
 // TestAgainstRealStore runs the parser over the user's actual Cursor IDE
-// database. Format drift at the vendor is a named risk (spec §9) and a
+// database. Format drift at the vendor is a named risk and a
 // synthetic fixture cannot catch it, so this is the canary. It is opt-in
 // because it depends on data that is not in the repository:
 //

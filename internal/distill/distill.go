@@ -1,10 +1,9 @@
-// Package distill turns a session tail plus a staged diff into a commit record
-// (spec §3.2).
+// Package distill turns a session tail plus a staged diff into a commit record.
 //
 // Two passes. The first extracts the record. The second re-reads the claims
 // against the diff *without* the transcript and labels each one. The second pass
 // is not a nicety: a record is written once and then read by every future agent,
-// so an unchecked confabulation becomes permanent canon (spec §2, P5).
+// so an unchecked confabulation becomes permanent canon.
 package distill
 
 import (
@@ -13,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/llm"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // Confidence labels how well a record survived verification. It is written into
@@ -30,9 +29,9 @@ const (
 	// Unverified means the verification pass did not run — out of time budget, or
 	// no engine available. The record is prose only, believe it accordingly.
 	Unverified Confidence = "unverified"
-	// Disputed means the diff contradicts at least one claim. Extends the three
-	// values in spec §3.2: silently downgrading a contradiction to "partial"
-	// would hide exactly the failure the verify pass exists to catch.
+	// Disputed means the diff contradicts at least one claim. It is its own level
+	// rather than a shade of "partial": silently downgrading a contradiction would
+	// hide exactly the failure the verify pass exists to catch.
 	Disputed Confidence = "disputed"
 	// MetadataOnly means distillation produced no prose at all; the record is
 	// trailers only.
@@ -45,8 +44,10 @@ type Rejected struct {
 	Reason string `json:"reason"`
 }
 
-// InvariantCandidate is a durable project rule proposed by a session. PRUNE
-// (v0.3) decides whether it survives.
+// InvariantCandidate is a durable project rule proposed by a session. It lives in
+// the commit that established it and is scoped to paths, so it reaches an agent
+// through the same reactive channel as the rest of the record — there is no
+// separate rules file, and nothing scores or retires it behind your back.
 type InvariantCandidate struct {
 	Text  string   `json:"text"`
 	Scope []string `json:"scope"`
@@ -54,10 +55,12 @@ type InvariantCandidate struct {
 
 // Extraction is the schema the first pass must produce.
 //
-// OpenItems and NextStep exist from v0.1 on purpose (spec §8): they cost one
-// prompt paragraph now, and without them `cairn resume` (§3.5) would need an LLM
-// pass instead of a deterministic template — and records already written would
-// never gain the fields retroactively.
+// OpenItems and NextStep are the state of the work at that moment, written for a
+// human reading `git log`; the reactive block cuts them, because by then that
+// state has usually been overtaken. They are kept because they cost one prompt
+// paragraph and cannot be backfilled — the transcript is gone by the time anyone
+// wants them — and because whether serving them helps is a measurable question,
+// not a settled one.
 type Extraction struct {
 	Subject    string               `json:"subject"`
 	Intent     string               `json:"intent"`
@@ -78,7 +81,7 @@ const (
 	// Contradicted: the diff shows the opposite.
 	Contradicted ClaimStatus = "contradicted"
 	// Unverifiable: the diff neither shows nor denies it. Kept and marked rather
-	// than dropped (spec §3.2) — an unverifiable claim is often the most
+	// than dropped — an unverifiable claim is often the most
 	// interesting part of the record.
 	Unverifiable ClaimStatus = "unverifiable"
 )
@@ -148,13 +151,13 @@ type Options struct {
 
 // DefaultBudget is the wall-clock allowance for one session.
 //
-// Spec §3.2 proposes 12 s. Measured on real hardware, extraction costs ~11 s and
-// verification ~11 s, so 12 s would mean the verification pass — the whole answer
-// to P5 — never runs, and every record would ship "unverified". 60 s fits both with
-// comfortable headroom on a cold prompt cache. A record is written once and read
-// for years, so correctness outranks the extra seconds; `cairn.timeout 12`
-// restores the spec's budget for anyone who prefers the faster commit. Commits
-// with several sessions scale this by the session count.
+// Measured on real hardware, extraction costs ~11 s and verification ~11 s, so the
+// 12 s the original design assumed would mean the verification pass — the only thing
+// standing between a confabulation and permanent canon — never runs, and every
+// record ships "unverified". 60 s fits both with comfortable headroom on a cold
+// prompt cache. A record is written once and read for years, so correctness outranks
+// the extra seconds; `cairn.timeout 12` is there for anyone who prefers the faster
+// commit. Commits with several sessions scale this by the session count.
 const DefaultBudget = 60 * time.Second
 
 // minVerifyBudget is the least time worth starting a verification pass with, and

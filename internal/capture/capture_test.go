@@ -3,8 +3,8 @@ package capture
 import (
 	"testing"
 
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/cursoride"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
 )
 
 // TestSharedStoreParsersComputeTheirOwnPointer guards the wiring rather than the

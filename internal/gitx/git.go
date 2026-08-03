@@ -1,7 +1,7 @@
 // Package gitx wraps the git CLI.
 //
-// Deliberate deviation from cairn-mvp.md §5: the spec proposes go-git v6 for
-// reads. We shell out for both reads and writes instead. Reasons: `git log
+// A git library (go-git) would do the reads. We shell out for both reads and
+// writes instead. Reasons: `git log
 // --follow`, `git interpret-trailers`, notes, signing, hooks and the user's own
 // config all come for free and behave identically to the user's git. Reads are
 // scoped and rare (a hook does one `diff --cached`), so process overhead is not
@@ -220,7 +220,7 @@ func (r *Repo) DiffOf(sha string, maxBytes int) (string, bool, error) {
 }
 
 // ParseTrailers runs the stock `git interpret-trailers --parse` and returns
-// trailers in order. We never write our own trailer parser (spec §5).
+// trailers in order. We never write our own trailer parser.
 func ParseTrailers(dir, message string) ([][2]string, error) {
 	out, err := RunInput(dir, message, "interpret-trailers", "--parse")
 	if err != nil {

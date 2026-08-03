@@ -7,15 +7,33 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
 )
 
 // Version is the build version, overridden at link time by goreleaser.
 var Version = "0.1.0-dev"
+
+// prog is the command name to print in help text.
+//
+// The binary is installed as `git-cairn`, which is how git finds it as a
+// subcommand, and usually symlinked to `cairn` for the short form. Help that says
+// `cairn init` to someone who typed `git cairn` (or the reverse) sends them to a
+// command they do not have, so the name is taken from argv[0]: git execs external
+// subcommands with argv[0] set to `git-cairn`.
+var prog = "cairn"
+
+// SetProgram records how cairn was invoked. Anything other than a git-cairn
+// binary keeps the short name, including `go run` and the test binary.
+func SetProgram(argv0 string) {
+	if filepath.Base(argv0) == "git-cairn" {
+		prog = "git cairn"
+	}
+}
 
 // ErrUsage signals that usage was already printed.
 var ErrUsage = errors.New("usage")
@@ -62,27 +80,27 @@ type command struct {
 
 func commands() []command {
 	return []command{
-		{"init", "install the prepare-commit-msg hook in this repository",
-			"cairn init [--force] [--mode message|notes]", cmdInit},
+		{"init", "install both halves: the commit hooks, and the harness hooks that serve records back",
+			prog + " init [--force] [--mode message|notes] [--agent claude-code|cursor|all|none]", cmdInit},
 		{"hook", "run a git hook (invoked by git, not by hand)",
-			"cairn hook prepare-commit-msg <file> [source] [sha]", cmdHook},
-		{"context", "the history of one file, for an agent about to touch it",
-			"cairn context --file <path> [--session <id>] [--reset] [--json]", cmdContext},
+			prog + " hook prepare-commit-msg <file> [source] [sha]", cmdHook},
+		{"context", "what an agent is told when it touches a path (what the hooks serve)",
+			prog + " context --file <path> [--session <id>] [--reset] [--json]", cmdContext},
 		{"why", "show the records behind a path, and why it looks like this",
-			"cairn why <path>[:line] [-n N]", cmdWhy},
+			prog + " why <path>[:line] [-n N]", cmdWhy},
 		{"rejected", "search alternatives that were already turned down",
-			"cairn rejected <query> [-n N]", cmdRejected},
+			prog + " rejected <query> [-n N]", cmdRejected},
 		{"show", "show the record of one commit",
-			"cairn show [<commit>]", cmdShow},
+			prog + " show [<commit>]", cmdShow},
 		{"audit", "distil past commits to measure what the corpus actually contains",
-			"cairn audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", cmdAudit},
+			prog + " audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", cmdAudit},
 		{"sessions", "list agent sessions cairn can see for this repository",
-			"cairn sessions [--all]", cmdSessions},
+			prog + " sessions [--all]", cmdSessions},
 		{"doctor", "check every dependency, and call each engine to prove it answers",
-			"cairn doctor", cmdDoctor},
+			prog + " doctor", cmdDoctor},
 		{"logs", "what cairn did on recent commits, and why a record degraded",
-			"cairn logs [-n N] [--path]", cmdLogs},
-		{"version", "print the version", "cairn version", cmdVersion},
+			prog + " logs [-n N] [--path]", cmdLogs},
+		{"version", "print the version", prog + " version", cmdVersion},
 	}
 }
 
@@ -118,9 +136,13 @@ func Run(args []string, out, errw io.Writer) error {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "cairn — the commit is the context carrier.")
+	fmt.Fprintln(w, "git-cairn — distils why an agent session decided what it did into the commit,")
+	fmt.Fprintln(w, "            and serves it back when an agent next touches those files.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "usage: cairn <command> [flags]")
+	fmt.Fprintf(w, "usage: %s <command> [flags]\n", prog)
+	if prog == "cairn" {
+		fmt.Fprintln(w, "       git cairn <command> [flags]   (same binary, found by git on PATH)")
+	}
 	fmt.Fprintln(w)
 	cs := commands()
 	sort.Slice(cs, func(i, j int) bool { return cs[i].name < cs[j].name })
@@ -163,7 +185,7 @@ func openRepo(env *Env) (*gitx.Repo, error) {
 }
 
 func cmdVersion(env *Env, args []string) error {
-	fmt.Fprintf(env.Out, "cairn %s\n", Version)
+	fmt.Fprintf(env.Out, "git-cairn %s\n", Version)
 	return nil
 }
 

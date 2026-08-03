@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YUNGC0DE/Cairn/internal/distill"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/testutil"
+	"github.com/YUNGC0DE/git-cairn/internal/distill"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/testutil"
 )
 
 func sampleResult() *distill.Result {
@@ -91,7 +91,7 @@ func TestTrailersAreParsedByGitItself(t *testing.T) {
 		t.Fatal(err)
 	}
 	// If git's own parser does not see them as trailers, `git log --grep` and
-	// third-party tooling will not either (spec §4.1).
+	// third-party tooling will not either.
 	trailers, err := gitx.ParseTrailers(repo.Root, msg)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestComposeWithoutProseStillWritesTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This is the timeout degradation from spec §3.2: no prose, but the pointer
+	// This is the timeout degradation: no prose, but the pointer
 	// to the transcript and the file list survive.
 	if !strings.Contains(msg, TrailerTranscript+": sha256:9f2a1c") {
 		t.Errorf("metadata-only record lost its transcript pointer:\n%s", msg)
@@ -177,7 +177,7 @@ func TestBodyCapsRejectedList(t *testing.T) {
 	if n := strings.Count(body, rejectedPrefix); n > maxRejectedRendered+1 {
 		t.Errorf("rendered %d rejected lines, cap is %d", n, maxRejectedRendered)
 	}
-	if !strings.Contains(body, "more, see `cairn rejected`") {
+	if !strings.Contains(body, "more, see `git cairn rejected`") {
 		t.Error("truncation must be visible, not silent")
 	}
 }
@@ -256,9 +256,9 @@ func TestParseReassemblesWrappedEntries(t *testing.T) {
 	}
 }
 
-// Open items and the next step are v0.1 scope so that `cairn resume` (spec §3.5)
-// can be assembled from records without a model. Records written without them
-// could never gain them retroactively.
+// Open items and the next step round-trip because they are written for a human
+// reading `git log` and cannot be backfilled — the transcript is gone by then.
+// The reactive block cuts them; the record keeps them.
 func TestOpenItemsAndNextStepRoundTrip(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	res := sampleResult()

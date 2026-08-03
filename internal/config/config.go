@@ -1,6 +1,6 @@
 // Package config resolves cairn's settings.
 //
-// v0.1 ships zero config files (spec §8). Settings come from git config, so they
+// Cairn ships zero config files. Settings come from git config, so they
 // live where a developer already looks and can be set per repo, and from
 // environment variables for one-off overrides. Env wins over git config.
 package config
@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/distill"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/distill"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
-// Mode is where a record is written (spec §4.2).
+// Mode is where a record is written.
 type Mode string
 
 const (

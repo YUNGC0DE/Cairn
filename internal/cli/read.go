@@ -5,13 +5,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/record"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/record"
 )
 
 // loadRecords reads commits and parses whatever record each carries. Notes are
 // merged into the message first, so a reader does not need to know which mode
-// the repository writes in (spec §4.2: two receivers, one format).
+// the repository writes in — two receivers, one format.
 func loadRecords(repo *gitx.Repo, logArgs, paths []string) ([]*record.Record, []gitx.Commit, error) {
 	commits, err := repo.Log(logArgs, paths)
 	if err != nil {
@@ -32,7 +32,7 @@ func loadRecords(repo *gitx.Repo, logArgs, paths []string) ([]*record.Record, []
 }
 
 func cmdWhy(env *Env, args []string) error {
-	fs := flags("why", "cairn why <path>[:line] [-n N]", env.Out)
+	fs := flags("why", prog+" why <path>[:line] [-n N]", env.Out)
 	limit := fs.Int("n", 10, "how many commits to look back through")
 	all := fs.Bool("all", false, "include commits with no cairn record")
 	if err := fs.Parse(args); err != nil {
@@ -76,14 +76,14 @@ func cmdWhy(env *Env, args []string) error {
 	}
 	if shown == 0 {
 		fmt.Fprintf(env.Out, "No cairn records touch this path in the last %s.\n", plural(*limit, "commit", "commits"))
-		fmt.Fprintln(env.Out, "Records start accumulating from the first agent commit after `cairn init`.")
+		fmt.Fprintf(env.Out, "Records start accumulating from the first agent commit after `%s init`.\n", prog)
 		fmt.Fprintln(env.Out, "Re-run with --all to see the plain commit subjects.")
 	}
 	return nil
 }
 
 func cmdRejected(env *Env, args []string) error {
-	fs := flags("rejected", "cairn rejected <query> [-n N]", env.Out)
+	fs := flags("rejected", prog+" rejected <query> [-n N]", env.Out)
 	limit := fs.Int("n", 2000, "how many commits to search")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -126,7 +126,7 @@ func cmdRejected(env *Env, args []string) error {
 }
 
 func cmdShow(env *Env, args []string) error {
-	fs := flags("show", "cairn show [<commit>]", env.Out)
+	fs := flags("show", prog+" show [<commit>]", env.Out)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

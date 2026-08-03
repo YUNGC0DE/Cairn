@@ -1,5 +1,5 @@
 // Package record is Cairn's wire format: the prose and trailers written into a
-// commit (spec §4.1), and the reader that gets them back out.
+// commit, and the reader that gets them back out.
 //
 // Trailers are parsed and written by git's own `interpret-trailers`, never by a
 // hand-rolled parser, so `git log --grep`, `-S` and `--follow` keep working and
@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/YUNGC0DE/Cairn/internal/distill"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/distill"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 )
 
 // Trailer keys. Cairn-Agent doubles as the marker that a commit carries a
@@ -36,7 +36,7 @@ const (
 	unverifiedLine  = "Cairn could not confirm against the diff: "
 )
 
-// Limits keep a record from swallowing the commit message (risk §9: "commit
+// Limits keep a record from swallowing the commit message (the risk being "commit
 // messages bloat, the team revolts").
 //
 // They were originally much tighter — four rejections, three invariants — and
@@ -84,7 +84,7 @@ func Body(res *distill.Result) string {
 		var lines []string
 		for i, r := range ex.Rejected {
 			if i >= maxRejectedRendered {
-				lines = append(lines, fmt.Sprintf("Rejected: (+%d more, see `cairn rejected`)", len(ex.Rejected)-i))
+				lines = append(lines, fmt.Sprintf("Rejected: (+%d more, see `git cairn rejected`)", len(ex.Rejected)-i))
 				break
 			}
 			lines = append(lines, wrap(rejectedPrefix+r.Option+" — "+r.Reason))
@@ -107,9 +107,10 @@ func Body(res *distill.Result) string {
 		paras = append(paras, strings.Join(lines, "\n"))
 	}
 
-	// Open items and the next step feed `cairn resume` (spec §3.5). They are prose
-	// so a human reading `git log` sees them too, and prefixed so the brief can be
-	// assembled from them without a model.
+	// Open items and the next step are the state of the work at that moment, for a
+	// human reading `git log`. They are prefixed so they can be recognised without
+	// parsing prose — which is how the reactive block knows where to cut, since by
+	// the time an agent reads the file that state is usually overtaken.
 	if len(ex.OpenItems) > 0 || ex.NextStep != "" {
 		var lines []string
 		for i, o := range ex.OpenItems {

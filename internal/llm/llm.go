@@ -1,5 +1,5 @@
 // Package llm runs the two distillation calls through whatever coding agent the
-// user already has installed (spec §5): the user's own subscription does the
+// user already has installed: the user's own subscription does the
 // work, so cairn needs no API key and costs its operator nothing.
 //
 // Every engine is a subprocess in headless mode with a hard deadline. A slow or
@@ -63,9 +63,9 @@ var ErrTimeout = errors.New("llm: engine exceeded its time budget")
 
 // Engines lists all engines in preference order.
 //
-// spec §5 also lists an API-key fallback. It is deliberately absent from v0.1:
-// it cannot be exercised from the development sandbox (no network), and an
-// untested network path in a git hook is worse than no path at all. See ROADMAP.
+// An API-key fallback is the obvious third engine and is deliberately absent: it
+// cannot be exercised from the development sandbox (no network), and an untested
+// network path in a git hook is worse than no path at all.
 func Engines() []Engine {
 	return []Engine{&ClaudeCode{}, &CursorAgent{}}
 }

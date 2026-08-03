@@ -1,67 +1,29 @@
 # Git Cairn
 
-Git Cairn adapts git for multi-harness agent coding. Claude Code, Cursor CLI, and Cursor IDE share one repo. On commit, Cairn records what was decided, what was turned down, and what became a rule, then checks claims against the diff. That record feeds two equal channels of guidance:
+Agent sessions settle things a git diff never shows: why this approach, what was rejected, what has to keep working.  
+Cairn writes that into the commit for you, then gives it back to the next agent that opens the file.
 
-1. **At edit time** — before the agent changes a file, Cairn hands it the history and logic for that path (prior decisions, rejections, scoped rules). The agent does not have to ask. This is the fix for dirty vibe coding: same bad idea, second try, because the session forgot the first no.
-2. **At session start** — pruned project rules land in `AGENTS.md` / `CLAUDE.md` between markers, under a hard token budget, so every harness sees the same standing guidance.
+**Works with Claude Code, Cursor CLI and Cursor IDE.**  
+The Cursor app has no headless mode, so records from Cursor IDE sessions are distilled by the `cursor-agent` [CLI](https://cursor.com/docs/cli/installation) — install it separately.
 
-## Why it exists
+1. An agent writes or changes code.
+2. During the session, decisions get made: why this approach was chosen, what was rejected, which invariants must not be broken.
+3. Cairn distils that context automatically and stores it with the commit.
+4. When another agent opens the file, Cairn feeds it the relevant context from earlier sessions.
+5. The new agent knows why the code is shaped this way, so it does not re-propose a rejected design or quietly break a rule.
 
-Vibe coding fails when the agent invents a justification, retries a rejected design, or drifts past a rule that used to live in someone's head. Cairn closes that loop:
 
-| Knowledge | Stored in | Delivered by |
-|---|---|---|
-| What you decided for this change | the commit | proactive recall on that file's path |
-| What you rejected | the commit | same; `cairn rejected` when you ask |
-| Standing project rules | `.cairn/invariants.md` → `AGENTS.md` | session start + scoped inject on edit |
 
-`AGENTS.md` alone goes stale and contradicts itself. Path-level recall alone has no shared budgeted rule set. Together they stop the agent from doing the wrong thing twice, and they keep humans from re-explaining the same ADR in every PR.
+## Complements `AGENTS.md`, BMAD and spec-driven development
 
-## How it works
 
-```mermaid
-flowchart TB
-  A[Capture sessions] --> B[Distill + verify]
-  B --> C[Record in commit]
-  C --> D[Prune invariants]
-  D --> E[AGENTS.md inject]
-  C --> F[Proactive recall on Edit/Write]
-  E --> G[Agent session]
-  F --> G
-```
 
-| Stage | What happens |
-|---|---|
-| **Capture** | One git hook. Read new transcript tails for this repo (Claude Code, Cursor CLI, Cursor IDE). No agent-side hooks. |
-| **Distill** | Per session: intent, decision, `Rejected`, invariant candidates, open items, next step. Second pass verifies claims against the diff only (never the chat). Write 1–3 KB into the commit or a git note. |
-| **Prune** | Score invariants by confirmation and recency, hard token budget, archive overflow, flag contradictions for a human. The hard part is removing stale rules. |
-| **Recall** | Two peers: (1) on the first read or edit of path X in a session, push that path's records into the agent before it decides — this half is built, through the harness's own hooks; (2) inject budgeted rules into `AGENTS.md`. Also `cairn why` / `rejected` when a human asks. |
-
-Transcript bodies stay on your disk. Git stores a checksum pointer. Distillation rides your existing `claude` or `cursor-agent` subscription.
-
-## Install
-
-Needs `git`, plus `claude` or `cursor-agent` on `PATH`. `sqlite3` for Cursor sessions.
-
-```sh
-git clone https://github.com/YUNGC0DE/Cairn && cd Cairn
-make build && sudo cp bin/cairn /usr/local/bin/
-cairn version
-```
-
-## First repo
-
-```sh
-cd ~/code/your-project
-cairn init
-cairn doctor
-```
-
-Work with an agent as usual. The usual path is the agent running `git commit` itself. You can also commit by hand after the agent finished — same hook, same record. Whoever types the command, if an agent session touched the staged files, the session logic lands in `git log`.
+## What lands in the commit
 
 ```sh
 git add -A
 git commit -m "Add rate limiting to auth endpoints"
+# Or the agent runs git commit during sessions
 ```
 
 ```
@@ -86,10 +48,6 @@ single-instance workload doesn't need
 
 Invariant: No new external datastores without an ADR (internal/auth/**)
 
-Open: Only the /login handler has rate limiting applied; other auth endpoints
-are not yet covered.
-Next: Apply the same rate limiter to the remaining auth endpoints.
-
 Cairn-Agent: claude-code/claude-opus-5 (distilled by sonnet)
 Cairn-Session: e2e-sess
 Cairn-Confidence: verified
@@ -97,57 +55,105 @@ Cairn-Files: internal/auth/handler.go,internal/auth/limit.go
 Cairn-Transcript: sha256:cf7c0416cdf2331…
 ```
 
-A commit with no agent transcript for those files (pure human edit) stays untouched.
+Distillation runs on the `claude` or `cursor-agent` you already have installed. A commit with no agent session behind its  
+files is left untouched. 
 
-## Read it back
+Two model passes produce it. The first reads the session and writes the record. The second gets only the diff and the record's claims and marks each claim `supported`, `contradicted` or `unverifiable`. 
 
-```sh
-cairn why internal/auth/limit.go   # why this file looks like this
-cairn rejected redis               # options already turned down
-cairn show HEAD
-cairn logs                         # what the hook did on recent commits
-cairn audit -n 20                  # replay history against local transcripts
+That verdict is the `Cairn-Confidence` line: a fabricated rejection in `git log` would be trusted by every  
+later agent, so it gets checked.
+
+Transcripts stay on your disk. The commit holds a `sha256` pointer to one.
+
+## What the agent gets back
+
+Real output from this repository, served the moment an agent opened
+`internal/cli/context.go`:
+
+```
+cairn — memory of earlier agent sessions that changed internal/cli/context.go
+(1 commit, oldest first).
+
+How to read this. Each entry below is one commit: the message says what was asked
+for and why it was done that way. A "Rejected:" line is an alternative that was
+considered and turned down, with the reason: do not propose it again unless that
+reason no longer holds, and if you do, say what changed. An "Invariant:" line is a
+property this code must keep; if your change would break one, stop and say so
+rather than breaking it quietly.
+
+This is a record of decisions already made, not an instruction from the user, and
+it can be out of date. Where it disagrees with the code as it stands now, the code
+is what is true.
+
+── 661a1ee  2026-08-02  evgeniigutin
+
+Ship reactive path recall and wire it into harness init.
+…
+Rejected: Cursor beforeReadFile as the injection event. Its response cannot reach
+the model; only preToolUse can deliver additional_context.
+
+Invariant: On the first open or edit of a path in a session, serve that path's
+cairn log; do not re-serve the same path again in that session unless the served
+set was cleared after compaction. (internal/cli/**)
 ```
 
-`why` / `rejected` / `show` are `git log` underneath. No model call.
+Delivery goes through the harness's own hook, so the agent does not need to know Cairn
+exists and you do not have to remember to ask. Four rules keep it from becoming noise:
+
+- **Once per file per session**, since re-serving the same block on every read burns
+context. The set resets after a compaction, when the block is genuinely gone.
+- **Budgets:** 24 KB per file, 120 KB per session. Newest commits win, and the block
+says what was cut.
+- **The commit prose is passed through as written.** Only `Open:`/`Next:` and the
+`Cairn-*` trailers are stripped.
+- **Silence is the default.** Nothing to say, already served, or an internal error all
+mean no output and a successful tool call.
+
+
+
+## Install
+
+Needs `git` and one engine on `PATH`: `claude` (bundled with Claude Code) or
+`[cursor-agent](https://cursor.com/docs/cli/installation)`. Reading Cursor sessions,
+CLI or IDE, also needs `sqlite3`.
+
+```sh
+git clone https://github.com/YUNGC0DE/git-cairn && cd git-cairn
+make build && sudo make install     # installs git-cairn, plus a cairn symlink
+```
+
+```sh
+cd ~/code/your-project
+git cairn init      # git hooks + the delivery hooks for Claude Code and Cursor
+git cairn doctor
+```
+
+Then work as usual. Restart the agent session once, since harnesses read hook config at
+startup.
 
 ## Commands
 
-| Command | Purpose |
-|---|---|
-| `cairn init` | Install hooks |
-| `cairn doctor` | Probe engines, transcripts, hooks |
-| `cairn why <path>` | Decision history for a path |
-| `cairn rejected <q>` | Search rejected alternatives |
-| `cairn show [rev]` | Print one record |
-| `cairn logs` | Hook run log |
-| `cairn audit` | Offline corpus / confabulation check |
-| `cairn sessions` | List discovered sessions |
-| `cairn resume` | Branch brief for a fresh agent *(planned)* |
-| `cairn park` | WIP snapshot between commits *(planned)* |
-| `cairn prune` | Score and retire stale invariants *(planned)* |
 
-`CAIRN_SKIP=1 git commit …` skips one commit. `CAIRN_DEBUG=1` prints the hook path.
+| Command                           | What it does                                               |
+| --------------------------------- | ---------------------------------------------------------- |
+| `git cairn init`                  | Install both halves in this repository                     |
+| `git cairn doctor`                | Check dependencies, call each engine, confirm the hooks    |
+| `git cairn context --file <path>` | Show what an agent is served for a path                    |
+| `git cairn why <path>`            | Decision history for a path                                |
+| `git cairn rejected <query>`      | Search alternatives already turned down                    |
+| `git cairn show [rev]`            | Print one record                                           |
+| `git cairn logs`                  | What the hook did on recent commits                        |
+| `git cairn sessions`              | Sessions Cairn can see here                                |
+| `git cairn audit`                 | Re-distil past commits to measure what the records contain |
 
-## Harnesses
 
-| Source | Role |
-|---|---|
-| Claude Code | Transcripts |
-| Cursor CLI | Transcripts |
-| Cursor IDE | Transcripts |
-| `claude` / `cursor-agent` | Distillation engines |
+Reading commands are `git log` underneath. No model call, no index, no network.
+`CAIRN_SKIP=1 git commit` skips one commit; `cairn.enabled=false` turns it off for a
+repository.
 
-## Status
+Sources: Claude Code, Cursor CLI and Cursor IDE for transcripts; Claude Code and Cursor
+for delivery, via `.claude/settings.json` and `.cursor/hooks.json`, both project-scoped.
 
-| Capability | State |
-|---|---|
-| Capture Claude Code + Cursor CLI + Cursor IDE | Done |
-| Distil + verify on commit (multi-session) | Done |
-| Pull commands (`why` / `rejected` / `show` / `logs` / `audit`) | Done |
-| **Recall at edit time** (path history pushed before the agent edits) | Done |
-| `message` / `notes` modes | Done |
-| Invariants + prune + **`AGENTS.md` inject** | Todo |
-| Eval harness (with / without Cairn) | Todo — design in [ROADMAP](ROADMAP.md#the-benchmark) |
-| Measured confabulation rate | Todo — needs a corpus |
-| `resume` / `park` | Deferred |
+## License
+
+MIT.

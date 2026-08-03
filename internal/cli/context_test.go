@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YUNGC0DE/Cairn/internal/testutil"
+	"github.com/YUNGC0DE/git-cairn/internal/testutil"
 )
 
 // recordedCommit writes a commit carrying a full record, without going anywhere

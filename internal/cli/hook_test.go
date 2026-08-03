@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/llm"
-	"github.com/YUNGC0DE/Cairn/internal/record"
-	"github.com/YUNGC0DE/Cairn/internal/testutil"
-	"github.com/YUNGC0DE/Cairn/internal/transcript/claudecode"
+	"github.com/YUNGC0DE/git-cairn/internal/llm"
+	"github.com/YUNGC0DE/git-cairn/internal/record"
+	"github.com/YUNGC0DE/git-cairn/internal/testutil"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/claudecode"
 )
 
 // scripted is a stand-in for a headless agent.
@@ -276,7 +276,7 @@ func TestHookDegradesToTrailersWhenExtractionFails(t *testing.T) {
 	msg := h.commitViaHook(t, "Add rate limiting")
 
 	// The prose is gone, but the pointer to the transcript is not: that is the
-	// whole point of the degradation ladder (spec §3.2).
+	// whole point of the degradation ladder.
 	if !strings.Contains(msg, record.TrailerConfidence+": metadata-only") {
 		t.Errorf("want a metadata-only record:\n%s", msg)
 	}

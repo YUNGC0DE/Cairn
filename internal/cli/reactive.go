@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 )
 
 // The delivery half of the reactive channel: the harness tells cairn that an

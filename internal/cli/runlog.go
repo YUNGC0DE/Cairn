@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 )
 
 // The run log answers one question: "the commit went through, the record came

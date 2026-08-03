@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/capture"
-	"github.com/YUNGC0DE/Cairn/internal/config"
-	"github.com/YUNGC0DE/Cairn/internal/distill"
-	"github.com/YUNGC0DE/Cairn/internal/gitx"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/capture"
+	"github.com/YUNGC0DE/git-cairn/internal/config"
+	"github.com/YUNGC0DE/git-cairn/internal/distill"
+	"github.com/YUNGC0DE/git-cairn/internal/gitx"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // auditOutcome is one commit replayed through distillation.
@@ -32,15 +32,15 @@ type auditOutcome struct {
 	Elapsed string                `json:"elapsed,omitempty"`
 }
 
-// cmdAudit answers the question spec §10 says to settle before writing code: do
-// real agent sessions actually contain rejected alternatives and invariants, or
-// is the category built on faith?
+// cmdAudit answers the question the whole product rests on: do real agent sessions
+// actually contain rejected alternatives and invariants, or is there nothing here
+// worth serving back to the next agent?
 //
 // It replays past commits through the same DISTILL path the hook uses, so the
 // numbers are the ones cairn would really produce — not an optimistic hand
-// count. The JSON output doubles as the first eval corpus (spec §7).
+// count. The JSON output doubles as the first eval corpus.
 func cmdAudit(env *Env, args []string) error {
-	fs := flags("audit", "cairn audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", env.Out)
+	fs := flags("audit", prog+" audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", env.Out)
 	limit := fs.Int("n", 20, "how many commits to examine, newest first")
 	since := fs.String("since", "", "only commits after this date (git --since syntax)")
 	jobs := fs.Int("jobs", 3, "how many commits to distil concurrently")
@@ -198,9 +198,10 @@ func cmdAudit(env *Env, args []string) error {
 	return nil
 }
 
-// auditReport prints the numbers §10 asks for, and states plainly what they mean.
-// The verdict is deliberately blunt: the point of the exercise is to be able to
-// abandon the hypothesis, not to find comfort in it.
+// auditReport prints the numbers that decide whether the records in this repository
+// are worth serving, and states plainly what they mean. The verdict is deliberately
+// blunt: the point of the exercise is to be able to abandon the hypothesis, not to
+// find comfort in it.
 func auditReport(env *Env, results []auditOutcome, verbose bool) {
 	var (
 		distilled, failed                     int
@@ -282,7 +283,7 @@ func auditReport(env *Env, results []auditOutcome, verbose bool) {
 	if claims := supported + contradicted + unverifiable; claims > 0 {
 		fmt.Fprintf(env.Out, "claims checked             %d (supported %d, unverifiable %d, contradicted %d)\n",
 			claims, supported, unverifiable, contradicted)
-		fmt.Fprintf(env.Out, "confabulation rate         %.1f%%  (spec §7: contradicted / checked)\n",
+		fmt.Fprintf(env.Out, "confabulation rate         %.1f%%  (contradicted / checked)\n",
 			100*float64(contradicted)/float64(claims))
 	} else {
 		fmt.Fprintln(env.Out, "claims checked             0 — verification did not run, no confabulation rate")
@@ -295,7 +296,7 @@ func auditReport(env *Env, results []auditOutcome, verbose bool) {
 	}
 	fmt.Fprintf(env.Out, "confidence                 %s\n", strings.Join(confs, ", "))
 
-	fmt.Fprintln(env.Out, "\n── verdict (spec §10) ──────────────────────────────────")
+	fmt.Fprintln(env.Out, "\n── verdict ─────────────────────────────────────────────")
 	if distilled == 0 {
 		fmt.Fprintln(env.Out, "Nothing was distilled, so there is no verdict to give.")
 		return
@@ -304,9 +305,11 @@ func auditReport(env *Env, results []auditOutcome, verbose bool) {
 	fmt.Fprintf(env.Out, "%.1f rejected alternatives per commit (%d over %s)\n",
 		density, totalRejected, plural(distilled, "commit", "commits"))
 
-	// A verdict needs a sample. The §10 threshold of "a dozen or more" assumes a
-	// month of history; pronouncing on three commits would be noise dressed as
-	// evidence, so say so instead.
+	// The question this answers: is there anything in your sessions worth serving
+	// back? Rejections and invariants are the part of a record an agent cannot
+	// re-derive from the diff, so their density is what the reactive channel has to
+	// work with. A verdict needs a sample — pronouncing on three commits would be
+	// noise dressed as evidence, so say so instead.
 	const minSample = 5
 	switch {
 	case distilled < minSample:
@@ -317,19 +320,19 @@ func auditReport(env *Env, results []auditOutcome, verbose bool) {
 			fmt.Fprintln(env.Out, "and re-run before drawing any conclusion.")
 		}
 	case totalRejected >= 10 || density >= 0.4:
-		fmt.Fprintln(env.Out, "The hypothesis holds on this corpus: P1 (agents re-inventing rejected")
-		fmt.Fprintln(env.Out, "solutions) is worth building for.")
+		fmt.Fprintln(env.Out, "Your sessions do settle things this way. That is exactly what the")
+		fmt.Fprintln(env.Out, "reactive channel serves back, so records here are worth having.")
 	case totalRejected >= 4:
-		fmt.Fprintln(env.Out, "Thin. Audit more history before committing to P1. If it stays this low,")
-		fmt.Fprintln(env.Out, "narrow to P3/P4 — reviewer and onboarding value does not depend on how")
-		fmt.Fprintln(env.Out, "often alternatives get rejected.")
+		fmt.Fprintln(env.Out, "Thin. Audit more history before concluding anything. If it stays this")
+		fmt.Fprintln(env.Out, "low, what an agent gets served is mostly intent — still useful, but the")
+		fmt.Fprintln(env.Out, "'do not propose that again' half is barely there.")
 	default:
-		fmt.Fprintln(env.Out, "The negatives are not there. Spec §10 says to take that seriously rather")
-		fmt.Fprintln(env.Out, "than tune the prompt: narrow to P3 (why for reviewers) and P4 (why for")
-		fmt.Fprintln(env.Out, "newcomers), where value does not depend on rejection frequency.")
+		fmt.Fprintln(env.Out, "The negatives are not there. Take that seriously rather than tuning the")
+		fmt.Fprintln(env.Out, "prompt: on this corpus a served record can only explain why the code is")
+		fmt.Fprintln(env.Out, "the way it is — it has nothing to warn the next agent off.")
 	}
 	if totalInvariants == 0 && distilled >= minSample {
-		fmt.Fprintln(env.Out, "No invariant candidates either — that puts v0.3 (prune) in question too.")
+		fmt.Fprintln(env.Out, "No invariant candidates either — nothing here states what must stay true.")
 	}
 	if unverifiable > 0 && supported == 0 {
 		fmt.Fprintln(env.Out, "\nEvery claim came back unverifiable. That usually means the diffs were")

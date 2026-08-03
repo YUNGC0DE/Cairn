@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // fixture builds a Claude Code transcript directory the way the real client
@@ -250,7 +250,7 @@ func TestSlugMatchesClaudeCodeNaming(t *testing.T) {
 }
 
 // TestAgainstRealTranscripts runs the parser over the user's actual Claude Code
-// transcripts. Vendor format drift is a named risk (spec §9) and a fixture cannot
+// transcripts. Vendor format drift is a named risk and a fixture cannot
 // catch it, so this is the canary. Opt-in, because it needs data that is not in
 // the repository:
 //

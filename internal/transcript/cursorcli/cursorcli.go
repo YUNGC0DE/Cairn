@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YUNGC0DE/Cairn/internal/sqlitex"
-	"github.com/YUNGC0DE/Cairn/internal/transcript"
+	"github.com/YUNGC0DE/git-cairn/internal/sqlitex"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 )
 
 // Name is the agent identifier written into Cairn-Agent trailers.

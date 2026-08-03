@@ -13,7 +13,7 @@ import (
 // written for: the commit was made from an editor's UI, the hook's stderr went
 // nowhere, and the record came out thinner than expected.
 func cmdLogs(env *Env, args []string) error {
-	fs := flags("logs", "cairn logs [-n N] [--path]", env.Out)
+	fs := flags("logs", prog+" logs [-n N] [--path]", env.Out)
 	n := fs.Int("n", 20, "how many entries to show, newest last")
 	showPath := fs.Bool("path", false, "print the log file's path and exit")
 	if err := fs.Parse(args); err != nil {

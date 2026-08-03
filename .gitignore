@@ -1,4 +1,3 @@
-cairn-mvp.md
 /bin/
 /dist/
 /testrepos/
@@ -6,3 +5,4 @@ cairn-mvp.md
 docs/
 *.md
 !README.md
+bench

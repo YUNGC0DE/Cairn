@@ -227,7 +227,18 @@ func hookCursorPreToolUse(env *Env, _ []string) error {
 	if out == "" {
 		return nil
 	}
-	b, err := json.Marshal(map[string]any{"additional_context": out})
+	// Both spellings, on purpose. `additional_context` is what this hook was
+	// written against; `agentMessage` is the field Cursor's other hook responses
+	// use for text meant for the model rather than the human. Asked directly,
+	// Cursor reported receiving nothing for a file cairn had answered in full —
+	// the hook fired, the path resolved, the text went back, and none of it
+	// reached the model — which points at the key, not the payload. An engine
+	// ignores a field it does not know, so sending both costs nothing and being
+	// wrong about which one it reads costs the whole feature.
+	b, err := json.Marshal(map[string]any{
+		"additional_context": out,
+		"agentMessage":       out,
+	})
 	if err != nil {
 		return nil
 	}

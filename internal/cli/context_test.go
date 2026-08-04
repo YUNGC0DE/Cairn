@@ -334,8 +334,16 @@ Cairn-Transcript: sha256:63e3e4a33ad29d88b7b278f4e5d4e8e5668f6f6cbe15dd245ddcd6b
 	}
 }
 
-// A budget in the tens of kilobytes has to actually be usable, not nominal.
-func TestContextDefaultBudgetFitsARealRecord(t *testing.T) {
+// The per-file budget has to fit what the harness will actually inline.
+//
+// This test used to assert the opposite — a floor of 20 kB, locking in the
+// decision that the budget should be generous because half a decision is worse
+// than none. Measurement overruled it: Claude Code inlines a hook's
+// additionalContext only to about 10 kB and spills the rest to a file with a 2 kB
+// preview, so a 12 kB injection reached an agent as four commits it never saw. A
+// budget the harness truncates is worse than a smaller one that arrives, because
+// truncation upstream carries no warning while cairn's own says what it cut.
+func TestContextDefaultBudgetFitsWhatTheHarnessInlines(t *testing.T) {
 	r := testutil.NewRepo(t)
 	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
 	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
@@ -345,8 +353,18 @@ func TestContextDefaultBudgetFitsARealRecord(t *testing.T) {
 	if !strings.Contains(out, "Invariant: the cache key must include the tenant id.") {
 		t.Fatalf("a single ordinary record should arrive whole:\n%s", out)
 	}
-	if defaultContextBudget < 20000 || defaultSessionBudget < 100000 {
-		t.Fatalf("budgets shrank: %d per file, %d per session",
-			defaultContextBudget, defaultSessionBudget)
+	// Measured ceiling: 9255 bytes arrived inline, 10.3 kB did not. Stay clear of it.
+	const harnessInlineLimit = 10000
+	if defaultContextBudget >= harnessInlineLimit {
+		t.Errorf("per-file budget %d will be truncated by the harness (inlines under %d)",
+			defaultContextBudget, harnessInlineLimit)
+	}
+	// A floor too: shrink this far enough and a record arrives as a header and a
+	// promise, which is the failure this whole budget exists to avoid.
+	if defaultContextBudget < 4000 {
+		t.Errorf("per-file budget %d is too small to carry one record's reasoning", defaultContextBudget)
+	}
+	if defaultSessionBudget < 10*defaultContextBudget {
+		t.Errorf("session budget %d leaves room for fewer than ten files", defaultSessionBudget)
 	}
 }

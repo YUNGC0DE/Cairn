@@ -29,11 +29,22 @@ import (
 //   - a session that touches thirty files must not produce thirty injections,
 //     so there is a cumulative budget on top of the per-file one.
 const (
-	// defaultContextBudget caps one file's injection, in bytes. It is generous on
-	// purpose: the reasoning in a record is the payload, and half a decision is
-	// worse than none — an agent that reads "we rejected X" without the "because"
-	// has been told to obey rather than told why.
-	defaultContextBudget = 24000
+	// defaultContextBudget caps one file's injection, in bytes.
+	//
+	// The number is set by the harness, not by taste. Claude Code inlines a hook's
+	// additionalContext only up to about 10 kB; past that it writes the text to a
+	// file, hands the model a ~2 kB preview and a path, and the model does not go
+	// and read it. Measured in one session: 8993, 9204 and 9255-byte injections
+	// arrived whole, while 10.3 kB and 12.4 kB were both spilled to disk. An agent
+	// asked what it had received from a 12.1 kB injection reported four of the five
+	// commits as unseen.
+	//
+	// So this was 24000 and that was worse than useless: it produced injections the
+	// harness would truncate, which is the one failure mode with no warning
+	// attached. 8000 leaves room for the harness's own wrapper and keeps what we
+	// send inside what the model actually reads. What does not fit is named — the
+	// block says how many commits it left out and which command shows them.
+	defaultContextBudget = 8000
 	// defaultSessionBudget caps everything the reactive channel may spend in one
 	// session, in bytes.
 	defaultSessionBudget = 120000

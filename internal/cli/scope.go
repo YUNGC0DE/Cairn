@@ -127,8 +127,31 @@ func splitScopes(s string) []string {
 	return out
 }
 
+// looksLikePath keeps prose out of a legacy scope list.
+//
+// It has to be strict in one direction: a rule read as scoped to something that
+// is not a path matches nothing and disappears for every reader. A trailing
+// parenthetical aside — "(e.g. Redis)" — is the case that would do it, so a bare
+// word and a token ending in a dot are not paths. A separator or a wildcard is
+// decisive; otherwise the token needs a plausible file extension.
 func looksLikePath(p string) bool {
-	return strings.ContainsAny(p, "/*") || strings.Contains(p, ".")
+	if strings.ContainsAny(p, "/*") {
+		return true
+	}
+	i := strings.LastIndexByte(p, '.')
+	if i <= 0 || i == len(p)-1 {
+		return false
+	}
+	ext := p[i+1:]
+	if len(ext) > 5 {
+		return false
+	}
+	for _, r := range ext {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // scopeMatches reports whether any glob covers path.

@@ -102,11 +102,16 @@ Invariant: SQLite stores over 256MiB are opened read-only in place
 }
 
 // A legacy invariant whose parentheses hold prose rather than paths must not be
-// read as scoped — otherwise it would be dropped for everyone.
+// read as scoped — otherwise it matches nothing and is dropped for everyone.
 func TestLegacyProseParenthesesAreNotScopes(t *testing.T) {
-	msg := "x\n\nInvariant: A hook failure must never block a commit (every error path\ndegrades the record and still exits 0)"
-	if got := dropOutOfScope(msg, "internal/auth/limit.go"); !strings.Contains(got, "never block a commit") {
-		t.Errorf("prose in parentheses was mistaken for a path scope:\n%s", got)
+	for _, msg := range []string{
+		"x\n\nInvariant: A hook failure must never block a commit (every error path\ndegrades the record and still exits 0)",
+		"x\n\nInvariant: No new external datastores without an ADR (e.g. Redis)",
+		"x\n\nInvariant: Budgets are per session (N sessions get N times the default)",
+	} {
+		if got := dropOutOfScope(msg, "internal/auth/limit.go"); !strings.Contains(got, "Invariant:") {
+			t.Errorf("prose in parentheses was mistaken for a path scope:\n%s", got)
+		}
 	}
 }
 

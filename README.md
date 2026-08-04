@@ -110,8 +110,11 @@ exists and you do not have to remember to ask. Four rules keep it from becoming 
 
 - **Once per file per session**, since re-serving the same block on every read burns
   context. The set resets after a compaction, when the block is genuinely gone.
-- **Budgets:** 24 KB per file, 120 KB per session. Newest commits win, and the block
-  says what was cut.
+- **Budgets:** 9.6 KB per file, 120 KB per session — the per-file figure is the
+  harnesses', not ours. Both cap a hook's additional context at 10 000 characters;
+  over that, Cursor drops the injection silently and Claude Code writes it to a file
+  the model does not open. Newest commits go first, so whatever gets cut is the
+  oldest, and the block says how many it left out.
 - **The commit is passed through as written** — the author's own message, then the
   `<git-cairn>` block. Nothing is regrouped or paraphrased. Three things are
   stripped: the `Cairn-*` trailers, git's own meta lines, and invariants whose

@@ -106,8 +106,12 @@ func TestContextBudgetKeepsNewest(t *testing.T) {
 	if !strings.Contains(full, "Add the page cache") || !strings.Contains(full, "Key the cache by tenant") {
 		t.Fatalf("both commits should be present unbudgeted:\n%s", full)
 	}
-	if strings.Index(full, "Add the page cache") > strings.Index(full, "Key the cache by tenant") {
-		t.Fatalf("history must read oldest first:\n%s", full)
+	// Newest first, so that whatever a harness truncates off the tail is the
+	// least relevant end. A 12.1 kB injection reached an agent as a 2 kB preview,
+	// and printing oldest-first meant the preview held the oldest commits while
+	// the decision it was about to collide with was the part that got cut.
+	if strings.Index(full, "Key the cache by tenant") > strings.Index(full, "Add the page cache") {
+		t.Fatalf("history must read newest first:\n%s", full)
 	}
 
 	// Room for the newest commit but not for both.
@@ -334,16 +338,14 @@ Cairn-Transcript: sha256:63e3e4a33ad29d88b7b278f4e5d4e8e5668f6f6cbe15dd245ddcd6b
 	}
 }
 
-// The per-file budget has to fit what the harness will actually inline.
+// The budget has to fit through the harness, or the block is not delivered at all.
 //
-// This test used to assert the opposite — a floor of 20 kB, locking in the
-// decision that the budget should be generous because half a decision is worse
-// than none. Measurement overruled it: Claude Code inlines a hook's
-// additionalContext only to about 10 kB and spills the rest to a file with a 2 kB
-// preview, so a 12 kB injection reached an agent as four commits it never saw. A
-// budget the harness truncates is worse than a smaller one that arrives, because
-// truncation upstream carries no warning while cairn's own says what it cut.
-func TestContextDefaultBudgetFitsWhatTheHarnessInlines(t *testing.T) {
+// Both harnesses cap a hook's additional context at 10 000 characters: Cursor
+// drops anything larger (see the constant in its own bundle, quoted where the
+// budget is defined) and Claude Code spills it to a file with a preview. So this
+// is not a preference to be tuned upward — an injection over the limit buys zero
+// delivered bytes.
+func TestContextBudgetFitsThroughTheHarness(t *testing.T) {
 	r := testutil.NewRepo(t)
 	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
 	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
@@ -353,16 +355,14 @@ func TestContextDefaultBudgetFitsWhatTheHarnessInlines(t *testing.T) {
 	if !strings.Contains(out, "Invariant: the cache key must include the tenant id.") {
 		t.Fatalf("a single ordinary record should arrive whole:\n%s", out)
 	}
-	// Measured ceiling: 9255 bytes arrived inline, 10.3 kB did not. Stay clear of it.
-	const harnessInlineLimit = 10000
-	if defaultContextBudget >= harnessInlineLimit {
-		t.Errorf("per-file budget %d will be truncated by the harness (inlines under %d)",
-			defaultContextBudget, harnessInlineLimit)
+	// Cursor: `Ydt = 1e4`, and `n.length > Ydt` means dropped.
+	const harnessLimit = 10000
+	if defaultContextBudget >= harnessLimit {
+		t.Errorf("per-file budget %d is at or over the harness limit %d — the block would be dropped",
+			defaultContextBudget, harnessLimit)
 	}
-	// A floor too: shrink this far enough and a record arrives as a header and a
-	// promise, which is the failure this whole budget exists to avoid.
-	if defaultContextBudget < 4000 {
-		t.Errorf("per-file budget %d is too small to carry one record's reasoning", defaultContextBudget)
+	if defaultContextBudget < 8000 {
+		t.Errorf("per-file budget %d gives up room it is allowed to use", defaultContextBudget)
 	}
 	if defaultSessionBudget < 10*defaultContextBudget {
 		t.Errorf("session budget %d leaves room for fewer than ten files", defaultSessionBudget)

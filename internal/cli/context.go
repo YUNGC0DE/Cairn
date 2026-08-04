@@ -31,22 +31,30 @@ import (
 const (
 	// defaultContextBudget caps one file's injection, in bytes.
 	//
-	// The number is set by the harness, not by taste. Claude Code inlines a hook's
-	// additionalContext only up to about 10 kB; past that it writes the text to a
-	// file, hands the model a ~2 kB preview and a path, and the model does not go
-	// and read it. Measured in one session: 8993, 9204 and 9255-byte injections
-	// arrived whole, while 10.3 kB and 12.4 kB were both spilled to disk. An agent
-	// asked what it had received from a 12.1 kB injection reported four of the five
-	// commits as unseen.
+	// This number is not ours to choose. Both harnesses cap a hook's additional
+	// context at 10 000 characters, and past that the block does not arrive at all.
+	// From Cursor's own bundle (packages/hooks-carriers, limits.ts holds
+	// `Ydt = 1e4`):
 	//
-	// So this was 24000 and that was worse than useless: it produced injections the
-	// harness would truncate, which is the one failure mode with no warning
-	// attached. 8000 leaves room for the harness's own wrapper and keeps what we
-	// send inside what the model actually reads. What does not fit is named — the
-	// block says how many commits it left out and which command shows them.
-	defaultContextBudget = 8000
+	//	if (n.length <= Ydt) return {kind:"inline", reminder: `<system_reminder>…`}
+	//	if (n.length >  JGu) return {kind:"dropped", reason:"exceeded_hard_max"}
+	//	if (!t.spillWriter)  return {kind:"dropped", …}
+	//
+	// and the protobuf carrier throws HookAdditionalContextTooLargeError outright.
+	// So over the limit Cursor drops the injection silently — the agent is told
+	// nothing and has no way to know it was told nothing — while Claude Code, which
+	// does configure a spill writer, saves the text to a file and hands the model a
+	// ~2 kB preview it does not follow. Both were observed: Cursor reported
+	// receiving nothing for a 12 461-byte block, and Claude Code reported four of
+	// five commits unseen from a 12.1 kB one.
+	//
+	// A generous-looking budget was therefore worse than a smaller one, not better:
+	// 24 000 bought zero delivered bytes on Cursor. 9600 leaves headroom under the
+	// limit (bytes here, characters there — UTF-8 makes our count the conservative
+	// one) and what does not fit is named in the block rather than lost quietly.
+	defaultContextBudget = 9600
 	// defaultSessionBudget caps everything the reactive channel may spend in one
-	// session, in bytes.
+	// session, in bytes — about a dozen files, after which a session has had enough.
 	defaultSessionBudget = 120000
 	// contextLookback is how far back the path history is read.
 	contextLookback = 30
@@ -112,7 +120,7 @@ func cmdContext(env *Env, args []string) error {
 		prog+" context --file <path> [--session <id>] [--budget N] [--reset] [--force] [--json]", env.Out)
 	file := fs.String("file", "", "path the agent is about to open or edit")
 	session := fs.String("session", "", "agent session id — a file is served once per session")
-	budget := fs.Int("budget", 0, "max bytes for this injection (default 24000)")
+	budget := fs.Int("budget", 0, "max bytes for this injection (default 64000)")
 	limit := fs.Int("n", contextLookback, "how many commits to look back through")
 	reset := fs.Bool("reset", false, "forget which files this session was served (use after compaction)")
 	force := fs.Bool("force", false, "serve even if this session already saw this file")
@@ -226,7 +234,7 @@ func trimBookkeeping(msg string) string {
 	return strings.Join(out, "\n")
 }
 
-// contextBlock is the file's history, oldest first.
+// contextBlock is the file's history, oldest first. render reverses it.
 type contextBlock struct {
 	File    string  `json:"file"`
 	Entries []entry `json:"entries"`
@@ -320,8 +328,19 @@ func (b *contextBlock) render(budget int) string {
 			sb.WriteString(note)
 		}
 	}
-	for _, r := range rendered[len(rendered)-kept:] {
-		sb.WriteString(r)
+	// Newest first, and this is the one ordering decision that is not taste.
+	//
+	// It used to read oldest first, the way a file's history actually happened.
+	// But cairn is not the last thing that can cut this block: a harness inlines
+	// only so much of a hook's context and truncates the rest, and it truncates the
+	// *tail*. Measured on a 12.1 kB injection, Claude Code kept a 2 kB preview and
+	// spilled the rest to a file, so what survived into the model was the oldest
+	// commits and what was lost was the newest — exactly inverted, since the agent
+	// is about to edit the file as it stands now. Whatever gets cut downstream must
+	// be the least relevant end, so the most recent decision goes first.
+	entries := rendered[len(rendered)-kept:]
+	for i := len(entries) - 1; i >= 0; i-- {
+		sb.WriteString(entries[i])
 	}
 	return sb.String()
 }
@@ -336,7 +355,7 @@ func (b *contextBlock) render(budget int) string {
 // stops the agent from treating a stale record as authority over the code in
 // front of it, which is the failure mode that makes memory worse than none.
 func header(file string, n int) string {
-	return fmt.Sprintf(`cairn — what earlier agent sessions decided about %s (%s, oldest first).
+	return fmt.Sprintf(`cairn — what earlier agent sessions decided about %s (%s, newest first).
 
 Each entry is one commit: its own message, then a <git-cairn> block distilled
 from the session that wrote it. In that block, "why:" is what was asked for and

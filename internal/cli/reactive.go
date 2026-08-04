@@ -227,18 +227,14 @@ func hookCursorPreToolUse(env *Env, _ []string) error {
 	if out == "" {
 		return nil
 	}
-	// Both spellings, on purpose. `additional_context` is what this hook was
-	// written against; `agentMessage` is the field Cursor's other hook responses
-	// use for text meant for the model rather than the human. Asked directly,
-	// Cursor reported receiving nothing for a file cairn had answered in full —
-	// the hook fired, the path resolved, the text went back, and none of it
-	// reached the model — which points at the key, not the payload. An engine
-	// ignores a field it does not know, so sending both costs nothing and being
-	// wrong about which one it reads costs the whole feature.
-	b, err := json.Marshal(map[string]any{
-		"additional_context": out,
-		"agentMessage":       out,
-	})
+	// One field, and it is this one. Cursor's PreToolUseRequestResponse carries
+	// permission, user_message, agent_message, updated_input and
+	// additional_context; only the last is context for the model that is not also
+	// a message about the tool call. agent_message would deliver the same block a
+	// second time, and permission is deliberately omitted — answering it would mean
+	// cairn overriding the user's approval settings on every file the agent opens.
+	// Cairn observes; it does not gate.
+	b, err := json.Marshal(map[string]any{"additional_context": out})
 	if err != nil {
 		return nil
 	}

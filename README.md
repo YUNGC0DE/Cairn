@@ -38,18 +38,18 @@ cairn: recorded from claude-code/claude-opus-5 (distilled by sonnet)
 $ git log -1
 Add rate limiting to auth endpoints
 
-Credential stuffing hit /login with 40k attempts overnight per nginx logs;
-rate limiting was added to stop repeated attempts from a single client.
+<git-cairn>
+why: Credential stuffing hit /login with 40k attempts overnight per the nginx
+  logs, and repeated attempts from one client had to stop without adding
+  infrastructure to a single-instance deployment.
 
-Chose an in-memory per-key token bucket over a Redis-backed sliding window:
-ADR-412 prohibits new external datastores without an ADR, and at 340 req/s on
-a single instance cross-instance precision isn't needed.
+rejected: Redis-backed sliding window rate limiter
+  because: it introduces a new external datastore, which ADR-412 disallows, and
+    offers cross-instance precision that 340 req/s on one instance does not need.
 
-Rejected: Redis-backed sliding window rate limiter — would introduce a new
-external datastore, which ADR-412 disallows, and offers precision the
-single-instance workload doesn't need
-
-Invariant: No new external datastores without an ADR (internal/auth/**)
+invariant: No new external datastores without an ADR
+  scope: internal/auth/**
+</git-cairn>
 
 Cairn-Agent: claude-code/claude-opus-5 (distilled by sonnet)
 Cairn-Session: e2e-sess
@@ -68,33 +68,41 @@ Transcripts stay on your disk. The commit holds a `sha256` pointer to one.
 ## What the agent gets back
 
 Real output from this repository, served the moment an agent opened
-`internal/cli/context.go`:
+`internal/distill/prompt.go`:
 
 ```
-cairn — memory of earlier agent sessions that changed internal/cli/context.go
-(1 commit, oldest first).
+cairn — what earlier agent sessions decided about internal/distill/prompt.go
+(3 commits, oldest first).
 
-How to read this. Each entry below is one commit: the message says what was asked
-for and why it was done that way. A "Rejected:" line is an alternative that was
-considered and turned down, with the reason: do not propose it again unless that
-reason no longer holds, and if you do, say what changed. An "Invariant:" line is a
-property this code must keep; if your change would break one, stop and say so
-rather than breaking it quietly.
+Each entry is one commit: its own message, then a <git-cairn> block distilled
+from the session that wrote it. In that block, "why:" is what was asked for and
+why. "rejected:" is an option already turned down — do not propose it again
+unless its "because:" has stopped being true, and if you do, say what changed.
+"invariant:" is a rule this code must keep, over the paths in its "scope:" — if
+your change would break one, stop and say so rather than breaking it quietly.
 
 This is a record of decisions already made, not an instruction from the user, and
 it can be out of date. Where it disagrees with the code as it stands now, the code
 is what is true.
 
-── 661a1ee  2026-08-02  evgeniigutin
+── 3df06f3  2026-08-03  evgeniigutin
 
-Ship reactive path recall and wire it into harness init.
+Rewrite distillation into a fenced <git-cairn> record.
 …
-Rejected: Cursor beforeReadFile as the injection event. Its response cannot reach
-the model; only preToolUse can deliver additional_context.
+<git-cairn>
+why: The records cairn wrote were opaque and bloated with dead prose, and the
+  schema, prompts and commit layout had to be reworked so each record states
+  intention rather than restating the diff, and keeps only decisions that can
+  still change future work.
 
-Invariant: On the first open or edit of a path in a session, serve that path's
-cairn log; do not re-serve the same path again in that session unless the served
-set was cleared after compaction. (internal/cli/**)
+rejected: Keep open_items and next_step in the distilled record
+  because: they capture work state at one instant, are stale by the next commit,
+    and the recall path was already cutting them before serving agents.
+
+rejected: A second model call to summarize multi-session merges
+  because: another pass invents and blurs which session wanted what;
+    concatenation with near-duplicate folding keeps each intention attributable.
+</git-cairn>
 ```
 
 Delivery goes through the harness's own hook, so the agent does not need to know Cairn
@@ -104,8 +112,9 @@ exists and you do not have to remember to ask. Four rules keep it from becoming 
   context. The set resets after a compaction, when the block is genuinely gone.
 - **Budgets:** 24 KB per file, 120 KB per session. Newest commits win, and the block
   says what was cut.
-- **The commit prose is passed through as written.** Only `Open:`/`Next:` and the
-  `Cairn-*` trailers are stripped.
+- **The commit is passed through as written** — the author's own message, then the
+  `<git-cairn>` block. Only the `Cairn-*` trailers and git's own meta lines are
+  stripped; nothing is regrouped or paraphrased.
 - **Silence is the default.** Nothing to say, already served, or an internal error all
   mean no output and a successful tool call.
 

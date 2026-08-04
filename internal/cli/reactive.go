@@ -39,12 +39,13 @@ type hookEvent struct {
 	WorkspaceRoots []string `json:"workspace_roots"`
 	HookEventName  string   `json:"hook_event_name"`
 	ToolName       string   `json:"tool_name"`
-	ToolInput      struct {
-		FilePath     string `json:"file_path"`
-		NotebookPath string `json:"notebook_path"`
-	} `json:"tool_input"`
-	FilePath string `json:"file_path"`
-	Trigger  string `json:"trigger"`
+	// ToolInput is left untyped: it is one tool's arguments, and which key holds
+	// the path is the tool's business, not the harness's.
+	ToolInput  map[string]any `json:"tool_input"`
+	FilePath   string         `json:"file_path"`
+	Path       string         `json:"path"`
+	TargetFile string         `json:"target_file"`
+	Trigger    string         `json:"trigger"`
 }
 
 func (e hookEvent) session() string {
@@ -54,15 +55,32 @@ func (e hookEvent) session() string {
 	return e.ConversationID
 }
 
+// pathKeys are the spellings a tool uses for "the file this call is about",
+// across the harnesses cairn reads. Claude Code's Read/Edit send file_path;
+// Cursor's read_file and edit_file send target_file or path.
+//
+// Reading only file_path — which is what this did — meant Cursor's hook fired,
+// found no path, and returned silence on every file the agent opened. The same
+// list already exists in both Cursor transcript parsers, which is where it came
+// from.
+var pathKeys = []string{
+	"file_path", "target_file", "targetFile", "path", "filePath",
+	"notebook_path", "notebookPath",
+}
+
 func (e hookEvent) path() string {
-	switch {
-	case e.ToolInput.FilePath != "":
-		return e.ToolInput.FilePath
-	case e.ToolInput.NotebookPath != "":
-		return e.ToolInput.NotebookPath
-	default:
-		return e.FilePath
+	for _, k := range pathKeys {
+		if s, ok := e.ToolInput[k].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
 	}
+	// Some events carry the path at the top level instead of under tool_input.
+	for _, s := range []string{e.FilePath, e.TargetFile, e.Path} {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // dir resolves which repository the event happened in. The hook process starts

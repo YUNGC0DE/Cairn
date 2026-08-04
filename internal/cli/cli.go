@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the build version, overridden at link time by goreleaser.
-var Version = "0.1.0-dev"
+var Version = "0.2.0"
 
 // prog is the command name to print in help text.
 //

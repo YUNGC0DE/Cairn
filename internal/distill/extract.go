@@ -166,8 +166,8 @@ func merge(exs []*Extraction) (*Extraction, []string) {
 	var notes []string
 	if droppedWhy > 0 {
 		notes = append(notes, fmt.Sprintf(
-			"%d of %d sessions restated an intention already recorded; theirs was left out",
-			droppedWhy, len(exs)))
+			"%d of %d sessions restated an intention already recorded, or did not fit the "+
+				"record's opening; theirs was left out", droppedWhy, len(exs)))
 	}
 	if n := rejectedIn - len(out.Rejected); n > 0 {
 		notes = append(notes, fmt.Sprintf("%d rejected alternatives were the same option worded twice", n))

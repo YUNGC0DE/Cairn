@@ -114,6 +114,13 @@ func (c *ClaudeCode) Complete(ctx context.Context, req Request) (*Response, erro
 	out, err := runCommand(ctx, c.bin(), args, req.Prompt)
 	elapsed := time.Since(start)
 	if err != nil {
+		// A failing `claude -p` still answers in its JSON envelope, and the whole
+		// envelope is what reached the run log — 400 characters of token counts and
+		// cache statistics per failed session, with the reason buried in it. Say the
+		// reason instead.
+		if msg := envelopeError(out); msg != "" {
+			return nil, fmt.Errorf("%s: %s", c.Name(), msg)
+		}
 		return nil, err
 	}
 
@@ -198,6 +205,25 @@ func (c *CursorAgent) Complete(ctx context.Context, req Request) (*Response, err
 	}, nil
 }
 
+// envelopeError digs the human-readable reason out of a failed `claude -p` run.
+// Returns "" when stdout is not one of its JSON envelopes, so the caller falls
+// back to the raw exit message.
+func envelopeError(out []byte) string {
+	var env claudeEnvelope
+	if json.Unmarshal(out, &env) != nil {
+		return ""
+	}
+	if msg := strings.TrimSpace(env.Result); msg != "" {
+		return clip(msg, 300)
+	}
+	if env.StopReason != "" {
+		// No message at all: the stop reason is the only thing that distinguishes a
+		// refusal from a truncation from a transport failure.
+		return "no output (stop_reason " + env.StopReason + ")"
+	}
+	return ""
+}
+
 // lookPath resolves a binary, returning "" when it is absent.
 func lookPath(bin string) string {
 	p, err := exec.LookPath(bin)
@@ -235,10 +261,12 @@ func runCommand(ctx context.Context, bin string, args []string, stdin string) ([
 			msg = strings.TrimSpace(out.String())
 		}
 		msg = annotateSandboxNetwork(msg)
+		// stdout is handed back alongside the error: an engine that fails still
+		// answers in its own format, and only the engine can read it.
 		if errors.As(err, &ee) {
-			return nil, fmt.Errorf("%s exited %d: %s", bin, ee.ExitCode(), clip(msg, 400))
+			return out.Bytes(), fmt.Errorf("%s exited %d: %s", bin, ee.ExitCode(), clip(msg, 400))
 		}
-		return nil, fmt.Errorf("%s: %w: %s", bin, err, clip(msg, 400))
+		return out.Bytes(), fmt.Errorf("%s: %w: %s", bin, err, clip(msg, 400))
 	}
 	return out.Bytes(), nil
 }

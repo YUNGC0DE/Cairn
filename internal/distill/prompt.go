@@ -37,6 +37,11 @@ You are given, in this order: <human-requests> (everything the human typed,
 verbatim, oldest first), <agent-session> (what the agent thought, said and ran;
 may be truncated), and <staged-diff> (the change being committed).
 
+One test decides every entry below: would a competent agent, six months from now,
+work differently for having read it? If not, leave the field out. Empty fields
+are the normal result and cost nothing; a filled one that changes nobody's
+behaviour costs every future reader the context it occupies.
+
 ── why ────────────────────────────────────────────────────────────────────────
 
 Two to four sentences answering one question: what did the human want, and why
@@ -73,10 +78,14 @@ it displaces the reader's own work.
 Alternatives that were on the table in this session and were turned down, each
 with the reason it lost.
 
-Include one only if BOTH of these hold:
+Include one only if ALL of these hold:
   1. Someone actually raised it — the human or the agent — and then dropped it.
   2. A later agent could plausibly propose it again, and the reason it lost is
      still the answer to why not.
+  3. It is a choice someone could face again: a design, a library, a mechanism,
+     a place to put something. Not a detail so local that the choice cannot
+     recur — one line's wording, one selector, one test's fixture. Those cost a
+     future reader more than they save.
 
 Exclude, and this covers most of what a session will offer you:
   - Anything you infer was "probably considered". If nobody said it, it is not
@@ -101,12 +110,17 @@ as a decision already made.
 Rules that must hold for FUTURE work in this repository and that this session
 established or confirmed.
 
-Include one only if BOTH of these hold:
+Include one only if ALL of these hold:
   1. It reads as a property, not an event. "A hook failure must never block a
      commit" is a rule; "the hook failure was fixed" is a report.
   2. Breaking it would do real damage — a bug, a security hole, data loss, a
      rejected review — and someone could break it without noticing. That is
      what makes it worth carrying; a rule nobody can violate teaches nothing.
+  3. It binds a real part of this codebase — neither one line nobody will touch
+     again, nor something true of every repository in the world. A rule about a
+     subsystem, a boundary, a file format or a contract between components is
+     the right size; "this variable stays lowercase" and "write clean code" are
+     the two ways of being useless.
 
 Exclude:
   - A restatement of what this commit did. The diff already says it.
@@ -120,8 +134,9 @@ Exclude:
 
 At most two, and zero is the normal answer. "scope" is the path globs the rule
 constrains, e.g. ["internal/auth/**"] — leave it empty only when the rule truly
-binds the whole repository, because an unscoped rule is served to every agent
-that opens any file.
+binds the whole repository. The scope does not decide who is shown the rule; it
+is how a reader tells whether the rule is theirs, so an unscoped one reads as
+binding everyone who ever sees it.
 
 ── claims ─────────────────────────────────────────────────────────────────────
 
@@ -129,6 +144,10 @@ Zero to four statements about <staged-diff> that someone holding only the diff
 could check and could prove false. They exist so a second pass can catch a
 record that reads well and is not true, so state the load-bearing parts of
 "why" and "because" — not decoration.
+
+One fact per claim. A claim joined by "and" is checked as a whole, so a reader
+who can confirm the first half and not the second must call the whole thing
+contradicted — which is how a true record ends up labelled disputed. Split it.
 
 Claim a concrete edit to a named file or symbol. Do not claim what a document
 "shows", "conveys", or "replaces with an image" — those are readings of prose,

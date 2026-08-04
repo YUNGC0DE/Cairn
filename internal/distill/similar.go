@@ -43,9 +43,9 @@ const invSoftThreshold = 0.32
 // that share almost no vocabulary — measured on this repository's own history, a
 // real pair of restated intentions scored 0.25 — so a lexical measure was never
 // going to catch those, and lowering the bar until it did would start folding two
-// genuinely different intentions into one. Only near-verbatim restatements are
-// folded; a distinct why is always kept, because cutting it loses that session's
-// purpose permanently.
+// genuinely different intentions into one. Length is what catches restatement
+// here (see mergeWhy); similarity only catches the near-verbatim case, and it has
+// to be sure, because a folded-away "why" is a session's purpose lost.
 const whyDupThreshold = 0.7
 
 // sameThreshold is for asking whether one string is a rewrite of another (a
@@ -203,15 +203,22 @@ var stopword = map[string]bool{
 	"instead": true, "rather": true, "into": true, "over": true, "per": true,
 }
 
-// mergeWhy keeps one statement of each distinct intention. N sessions with N
-// different asks produce N why entries; only a near-verbatim restatement is
-// folded away. There is no count or byte cap: cutting a distinct why loses a
-// session's purpose permanently, which is worse than a longer opening.
+// mergeWhy keeps the first statement of each distinct intention, within a budget,
+// and reports what it left out.
 //
 // First, not last: the sessions arrive oldest-first, and the earliest statement of
 // a purpose is the one closest to the request that prompted it. Later sessions
-// that only reword it are dropped as duplicates (see whyDupThreshold).
+// restate it in terms of the work already done, which is drift.
+//
+// The budget is the part that actually fixes the complaint. A record is supposed
+// to open with a few sentences on what was wanted; six sessions each contributing
+// their own version is not six times as informative, it is the same paragraph six
+// times, and it is the first thing a reader sees. Rejections and invariants have
+// no equivalent cap — those are facts a later agent cannot re-derive from the
+// diff, and dropping one loses it for good — but a seventh restatement of the
+// same intention is not a fact, it is volume.
 func mergeWhy(in []string) (kept []string, dropped int) {
+	spent := 0
 	for _, w := range in {
 		if w = strings.TrimSpace(w); w == "" {
 			continue
@@ -227,10 +234,24 @@ func mergeWhy(in []string) (kept []string, dropped int) {
 			dropped++
 			continue
 		}
+		if len(kept) >= maxMergedWhy || spent+len(w) > whyBudget {
+			dropped++
+			continue
+		}
+		spent += len(w)
 		kept = append(kept, w)
 	}
 	return kept, dropped
 }
+
+// How much of a merged record may be spent on intention. One session's "why" is
+// capped at maxWhy (600 bytes) by the prompt and the sanitiser; a commit made of
+// many sessions gets room for a couple of genuinely different intentions and no
+// more.
+const (
+	maxMergedWhy = 3
+	whyBudget    = 900
+)
 
 // dedupRejected folds rewordings of the same rejected option together, keeping
 // the entry whose reason says more — two sessions arguing the same option down

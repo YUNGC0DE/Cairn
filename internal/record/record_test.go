@@ -225,7 +225,7 @@ func TestBodyEmptyForNoRecord(t *testing.T) {
 
 func TestWrapKeepsLinesWithinGitWidth(t *testing.T) {
 	long := strings.Repeat("word ", 60)
-	for _, line := range strings.Split(wrapIndent(long, "  "), "\n") {
+	for _, line := range strings.Split(wrapIndent(long, "", "  "), "\n") {
 		if len(line) > wrapAt {
 			t.Fatalf("line of %d chars exceeds %d: %q", len(line), wrapAt, line)
 		}

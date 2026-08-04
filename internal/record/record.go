@@ -161,12 +161,17 @@ func Body(res *distill.Result) string {
 // indent so the grammar stays unambiguous: column zero starts a field, anything
 // indented continues one.
 func field(key, value string) string {
-	return wrapIndent(key+" "+strings.TrimSpace(value), "  ")
+	return wrapIndent(key+" "+strings.TrimSpace(value), "", "  ")
 }
 
 // subfield renders a key that belongs to the entry above it, one level in.
+//
+// The first-line indent has to be passed in rather than glued onto the text:
+// wrapping splits on whitespace, so a leading indent inside the string is simply
+// dropped — which is how "  because:" shipped at column zero and broke the one
+// rule the grammar has.
 func subfield(key, value string) string {
-	return wrapIndent("  "+key+" "+strings.TrimSpace(value), "    ")
+	return wrapIndent(key+" "+strings.TrimSpace(value), "  ", "    ")
 }
 
 // Trailers renders the machine-readable half, in the order they should appear.
@@ -248,13 +253,18 @@ func Parse(repoDir string, c gitx.Commit) (*Record, error) {
 }
 
 // blockIn returns the contents of the <git-cairn> block, if the message has one.
+//
+// The tag only counts at the start of a line. Cairn writes it that way, and the
+// tag can legitimately appear mid-text elsewhere in a message: a contradicted
+// claim about this very format lands in a Cairn-Disputed trailer quoting both
+// tags, and matching that would parse a trailer as the record.
 func blockIn(msg string) (string, bool) {
-	i := strings.Index(msg, OpenTag)
+	i := lineIndex(msg, OpenTag)
 	if i < 0 {
 		return "", false
 	}
 	rest := msg[i+len(OpenTag):]
-	if j := strings.Index(rest, CloseTag); j >= 0 {
+	if j := lineIndex(rest, CloseTag); j >= 0 {
 		return rest[:j], true
 	}
 	// An unterminated block is still a block: a truncated message should give up
@@ -305,6 +315,21 @@ func parseBlock(rec *Record, body string) {
 		case cur != nil:
 			*cur += " " + trimmed
 		}
+	}
+}
+
+// lineIndex finds tag where it begins a line, or -1.
+func lineIndex(s, tag string) int {
+	for i := 0; ; {
+		j := strings.Index(s[i:], tag)
+		if j < 0 {
+			return -1
+		}
+		at := i + j
+		if at == 0 || s[at-1] == '\n' {
+			return at
+		}
+		i = at + len(tag)
 	}
 }
 
@@ -423,7 +448,7 @@ const wrapAt = 76
 // every line after the first with indent. The indent is what makes the block
 // parseable: a wrapped line can never be mistaken for a new field, and a field
 // can never be mistaken for a git trailer.
-func wrapIndent(s, indent string) string {
+func wrapIndent(s, first, cont string) string {
 	words := strings.Fields(s)
 	if len(words) == 0 {
 		return ""
@@ -433,13 +458,14 @@ func wrapIndent(s, indent string) string {
 	for i, w := range words {
 		switch {
 		case i == 0:
+			b.WriteString(first)
 			b.WriteString(w)
-			lineLen = len(w)
+			lineLen = len(first) + len(w)
 		case lineLen+1+len(w) > wrapAt:
 			b.WriteByte('\n')
-			b.WriteString(indent)
+			b.WriteString(cont)
 			b.WriteString(w)
-			lineLen = len(indent) + len(w)
+			lineLen = len(cont) + len(w)
 		default:
 			b.WriteByte(' ')
 			b.WriteString(w)

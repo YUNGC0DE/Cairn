@@ -195,9 +195,10 @@ func (r *reworder) Complete(_ context.Context, req llm.Request) (*llm.Response, 
 	}`}, nil
 }
 
-// N sessions with N different asks keep N why entries. A count/byte cap on why
-// would drop a real intention; only near-verbatim restatements are folded.
-func TestDistinctWhysAreAllKept(t *testing.T) {
+// A commit made of many sessions must not open with the same intention restated
+// once per session. Six restatements are not six times as informative, and they
+// are the first thing any reader sees.
+func TestMergedWhyIsBounded(t *testing.T) {
 	var sessions []*transcript.Session
 	for _, tag := range []string{"A", "B", "C", "D", "E", "F"} {
 		sessions = append(sessions, sessionSaying("sess-"+tag, tag, tag+".go"))
@@ -208,9 +209,21 @@ func TestDistinctWhysAreAllKept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(res.Extraction.Why); n != len(sessions) {
-		t.Errorf("why entries = %d, want all %d kept: %q", n, len(sessions), res.Extraction.Why)
+	if n := len(res.Extraction.Why); n > maxMergedWhy {
+		t.Errorf("why entries = %d, want at most %d", n, maxMergedWhy)
 	}
+	total := 0
+	for _, w := range res.Extraction.Why {
+		total += len(w)
+	}
+	if total > whyBudget {
+		t.Errorf("why total = %d bytes, want at most %d", total, whyBudget)
+	}
+	// What was left out is reported, not hidden.
+	if !strings.Contains(strings.Join(res.Notes, " "), "was left out") {
+		t.Errorf("sessions were dropped silently: %v", res.Notes)
+	}
+	// Rejections are not capped: they are the half a later agent cannot re-derive.
 	if n := len(res.Extraction.Rejected); n != len(sessions) {
 		t.Errorf("rejected = %d, want all %d kept", n, len(sessions))
 	}

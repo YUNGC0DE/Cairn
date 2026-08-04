@@ -278,7 +278,12 @@ func (p *Parser) Load(ref transcript.Ref, from transcript.Cursor) (*transcript.S
 		if m != nil {
 			s.Messages = append(s.Messages, *m)
 		}
-		if model != "" {
+		// Claude Code writes "<synthetic>" as the model on turns it injected
+		// itself. Taken at face value it becomes the session's model and lands in
+		// the Cairn-Agent trailer, where it reads as a real engine name — seen in
+		// this repository's own history as "claude-code/<synthetic>+grok-4.5". No
+		// model id starts with "<".
+		if model != "" && !strings.HasPrefix(model, "<") {
 			s.Model = model
 		}
 		if e.GitBranch != "" {

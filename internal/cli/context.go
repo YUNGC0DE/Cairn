@@ -254,6 +254,10 @@ func buildContext(repo *gitx.Repo, path string, limit int) *contextBlock {
 			msg = strings.TrimRight(msg, "\n") + "\n\n" + note
 		}
 		msg = trimBookkeeping(msg)
+		// A rule that names the paths it binds is only served to those paths. Without
+		// this, `scope` was decoration: every invariant in every commit that ever
+		// touched this file was shown, whatever subsystem it was about.
+		msg = dropOutOfScope(msg, path)
 		if strings.TrimSpace(msg) == "" {
 			continue
 		}

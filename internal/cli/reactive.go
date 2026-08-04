@@ -114,20 +114,70 @@ func readEvent(env *Env) (hookEvent, bool) {
 // honour the once-per-file-per-session rule, and render.
 func contextFor(env *Env, e hookEvent) string {
 	path := e.path()
-	if path == "" {
-		return ""
-	}
 	repo, err := gitx.Open(e.dir(env.Dir))
-	if err != nil {
+	if err != nil || path == "" {
+		traceEvent(env, repo, e, path, 0, "no path in the payload")
 		return ""
 	}
 	out, err := serveContext(repo, serveRequest{
 		Path: path, Session: e.session(), Hooked: true,
 	})
 	if err != nil {
+		traceEvent(env, repo, e, path, 0, "error: "+err.Error())
 		return ""
 	}
+	why := "served"
+	if out == "" {
+		why = "silent (already served this session, budget spent, or no records)"
+	}
+	traceEvent(env, repo, e, path, len(out), why)
 	return out
+}
+
+// traceEvent records one touch when CAIRN_DEBUG is set, and nothing otherwise.
+//
+// It exists because a harness that swallows an injection is indistinguishable,
+// from the outside, from cairn never having produced one — and that ambiguity
+// cost a real afternoon: Cursor reported receiving nothing for a file cairn had
+// answered with 12 kB. Cairn can only prove its own half, so its own half is
+// what this writes down: which event arrived, under which session id, which key
+// carried the path, and what went back.
+func traceEvent(env *Env, repo *gitx.Repo, e hookEvent, path string, n int, why string) {
+	if env.Getenv == nil || env.Getenv("CAIRN_DEBUG") == "" || repo == nil {
+		return
+	}
+	event := e.HookEventName
+	if event == "" {
+		event = "(unnamed)"
+	}
+	logRun(repo, fmt.Sprintf("%s %s tool=%s session=%s path=%s → %d bytes, %s",
+		event, pathKeyUsed(e), orNone(e.ToolName), orNone(e.session()), orNone(path), n, why), nil)
+}
+
+// pathKeyUsed names which spelling the harness used, which is the detail that
+// makes a payload mismatch obvious instead of invisible.
+func pathKeyUsed(e hookEvent) string {
+	for _, k := range pathKeys {
+		if s, ok := e.ToolInput[k].(string); ok && strings.TrimSpace(s) != "" {
+			return "tool_input." + k
+		}
+	}
+	switch {
+	case e.FilePath != "":
+		return "file_path"
+	case e.TargetFile != "":
+		return "target_file"
+	case e.Path != "":
+		return "path"
+	}
+	return "(none)"
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // hookPreToolUse answers Claude Code's PreToolUse. Silence — exit 0, no output —

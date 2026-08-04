@@ -113,8 +113,9 @@ exists and you do not have to remember to ask. Four rules keep it from becoming 
 - **Budgets:** 24 KB per file, 120 KB per session. Newest commits win, and the block
   says what was cut.
 - **The commit is passed through as written** — the author's own message, then the
-  `<git-cairn>` block. Only the `Cairn-*` trailers and git's own meta lines are
-  stripped; nothing is regrouped or paraphrased.
+  `<git-cairn>` block. Nothing is regrouped or paraphrased. Three things are
+  stripped: the `Cairn-*` trailers, git's own meta lines, and invariants whose
+  `scope:` does not cover the file being opened.
 - **Silence is the default.** Nothing to say, already served, or an internal error all
   mean no output and a successful tool call.
 

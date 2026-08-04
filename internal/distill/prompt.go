@@ -132,11 +132,15 @@ Exclude:
     argv[0]" and "use the prog variable derived from argv[0]" are one rule —
     keep the clearer one, drop the echo.
 
-At most two, and zero is the normal answer. "scope" is the path globs the rule
-constrains, e.g. ["internal/auth/**"] — leave it empty only when the rule truly
-binds the whole repository. The scope does not decide who is shown the rule; it
-is how a reader tells whether the rule is theirs, so an unscoped one reads as
-binding everyone who ever sees it.
+At most two, and zero is the normal answer.
+
+"scope" is the path globs the rule constrains, e.g. ["internal/auth/**"], and it
+decides who is ever shown the rule: a later agent is served an invariant only
+when the file it opened falls inside the scope, while an unscoped rule is shown
+to every reader of this commit. Both mistakes cost something. Too narrow and the
+rule never reaches the code it binds; absent and it interrupts everyone. Name the
+paths the rule is actually about, and leave the scope empty only when it truly
+binds the whole repository.
 
 ── claims ─────────────────────────────────────────────────────────────────────
 

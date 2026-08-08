@@ -20,13 +20,12 @@ import (
 
 	"github.com/YUNGC0DE/git-cairn/internal/transcript"
 	"github.com/YUNGC0DE/git-cairn/internal/transcript/claudecode"
-	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursorcli"
-	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursor"
 )
 
 // Parsers returns every registered transcript parser.
 func Parsers() []transcript.Parser {
-	return []transcript.Parser{claudecode.New(), cursorcli.New(), cursoride.New()}
+	return []transcript.Parser{claudecode.New(), cursor.New()}
 }
 
 // ParserByName returns a single parser, or nil.
@@ -173,30 +172,20 @@ func hasSignal(s *transcript.Session) bool {
 }
 
 // TranscriptPointer is the sha256 of a transcript's current bytes. Cairn stores
-// this pointer and never the transcript itself: the content stays on
-// the user's disk, secrets never enter git history.
+// this pointer and never the transcript itself: the content stays on the user's
+// disk, and secrets never enter git history.
 //
-// A parser whose sessions share one store computes its own pointer: hashing the
-// file would hash every other conversation with it.
+// Every parser now points at one file per session, so this is the whole of it.
+// It used to have a per-parser escape hatch, for when Cursor's sessions lived
+// together in one multi-gigabyte database and hashing the file would have hashed
+// every other conversation on the machine along with it.
 func TranscriptPointer(ref transcript.Ref) string {
-	if p, ok := ParserByName(ref.Agent).(transcript.Pointerer); ok {
-		return p.Pointer(ref)
-	}
-	h := sha256.New()
-	info, err := os.Stat(ref.Path)
-	if err != nil {
-		return ""
-	}
-	target := ref.Path
-	if info.IsDir() {
-		// Cursor: hash the store, which is content-addressed anyway.
-		target = filepath.Join(ref.Path, "store.db")
-	}
-	f, err := os.Open(target)
+	f, err := os.Open(ref.Path)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
+	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return ""
 	}

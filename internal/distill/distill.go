@@ -9,6 +9,8 @@ package distill
 import (
 	"context"
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,61 +40,39 @@ const (
 	MetadataOnly Confidence = "metadata-only"
 )
 
-// Rejected is an alternative that was considered and turned down. Because is the
-// half that makes it useful: an option with no reason reads as a prohibition and
-// gets re-litigated by the first agent that disagrees with it.
-type Rejected struct {
-	Option  string `json:"option"`
-	Because string `json:"because"`
-}
-
-// Invariant is a durable project rule established by a session. It lives in the
-// commit that established it and is scoped to paths, so it reaches an agent
-// through the same reactive channel as the rest of the record — there is no
-// separate rules file, and nothing scores or retires it behind your back.
-type Invariant struct {
-	Rule  string   `json:"rule"`
-	Scope []string `json:"scope"`
-}
-
-// Extraction is the schema the first pass must produce. Four fields, and three of
-// them are routinely empty.
+// Rule is one file-level rule a session established: an option turned down, or a
+// property the code has to keep. Three parts, and each has exactly one job.
 //
-// It used to have eight. `subject` was extracted, sanitised and then never
-// rendered anywhere — a field the model paid for and no reader ever saw.
-// `decision` overlapped `intent` so heavily that merging several sessions
-// produced the same paragraph three times in slightly different words, and what
-// it carried that intent did not — the option that lost — is what Rejected is
-// for. `open_items` and `next_step` described the state of the work at one
-// instant; that state is stale before the next commit lands, and the reactive
-// channel was already cutting both before serving a record, so they were written
-// for nobody.
+// Rule is the sentence a later agent is shown the moment it opens the file, so it
+// is short and carries no justification. That is not taste: both harnesses drop a
+// hook's injection past 10 000 characters, and fifty commits of a file's history
+// have to fit inside that, which leaves about two lines per commit.
+//
+// Why is the justification, and it stays in the commit. An agent reaches it only
+// after the rule has told it there is something worth reaching for — one `git
+// show` away, at no cost to anyone who does not need it.
+//
+// Files is what the rule binds. The record is file-level throughout: recall is
+// `git log -- <path>`, so a rule naming a file this commit does not touch would
+// never be served to anybody, and is dropped rather than written.
+type Rule struct {
+	Rule  string   `json:"rule"`
+	Why   string   `json:"why"`
+	Files []string `json:"files"`
+}
+
+// Extraction is the schema the first pass must produce.
+//
+// It used to open with a "why" paragraph about the commit as a whole. That field
+// was the bulk of every record and none of its usefulness: it explained a change
+// the reader already has the diff for, while the rules — the things a later agent
+// cannot re-derive — were what the reactive channel actually needed to deliver.
+// Justification did not disappear, it moved inside each rule, where it explains
+// the one thing a reader might otherwise re-litigate.
 type Extraction struct {
-	// Why is what the human wanted and why they wanted it, 2-4 sentences. Merged
-	// records hold one entry per session, which is why it is a list: two sessions
-	// that wanted different things did not want one blended thing.
-	Why        []string    `json:"why"`
-	Rejected   []Rejected  `json:"rejected"`
-	Invariants []Invariant `json:"invariants"`
-	Claims     []string    `json:"claims"`
-}
-
-// extraction is the wire form of Extraction. The model answers with one "why"
-// string; only merging across sessions produces several, and asking a model for
-// a list of one is asking for a list of three.
-type extraction struct {
-	Why        string      `json:"why"`
-	Rejected   []Rejected  `json:"rejected"`
-	Invariants []Invariant `json:"invariants"`
-	Claims     []string    `json:"claims"`
-}
-
-func (e *extraction) toExtraction() *Extraction {
-	out := &Extraction{Rejected: e.Rejected, Invariants: e.Invariants, Claims: e.Claims}
-	if w := strings.TrimSpace(e.Why); w != "" {
-		out.Why = []string{w}
-	}
-	return out
+	Rejected   []Rule   `json:"rejected"`
+	Invariants []Rule   `json:"invariants"`
+	Claims     []string `json:"claims"`
 }
 
 // ClaimStatus is a verification verdict for one claim.
@@ -411,49 +391,8 @@ func (r *Result) DisputedClaims() []ClaimVerdict {
 // stays in the prompt, because a regex that guesses at meaning silently deletes
 // the one rejection that mattered.
 func sanitize(ex *Extraction, in Input) {
-	why := ex.Why[:0]
-	for _, w := range ex.Why {
-		if w = clean(w, maxWhy); w != "" && !restatesSubject(w, in.Subject) {
-			why = append(why, w)
-		}
-	}
-	ex.Why = why
-
-	rej := ex.Rejected[:0]
-	for _, r := range ex.Rejected {
-		r.Option = clean(r.Option, maxOption)
-		r.Because = clean(r.Because, maxBecause)
-		switch {
-		case r.Option == "" || r.Because == "":
-			// Half a rejection is worse than none: with no reason it reads as a
-			// prohibition, and the next agent either obeys it blindly or re-opens it.
-			continue
-		case emptyReason(r.Because):
-			// "Not chosen" is not a reason. The prompt says so; models still do it.
-			continue
-		case sameThing(r.Option, r.Because):
-			continue // the reason merely repeats the option
-		}
-		rej = append(rej, r)
-	}
-	ex.Rejected = dedupRejected(rej)
-	if len(ex.Rejected) > maxRejectedPerSession {
-		ex.Rejected = ex.Rejected[:maxRejectedPerSession]
-	}
-
-	inv := ex.Invariants[:0]
-	for _, c := range ex.Invariants {
-		c.Rule = clean(c.Rule, maxRule)
-		if c.Rule == "" || describesThisChange(c.Rule) {
-			continue
-		}
-		c.Scope = normalizeScope(c.Scope)
-		inv = append(inv, c)
-	}
-	ex.Invariants = dedupInvariants(inv)
-	if len(ex.Invariants) > maxInvariantsPerSession {
-		ex.Invariants = ex.Invariants[:maxInvariantsPerSession]
-	}
+	ex.Rejected = cleanRules(ex.Rejected, in.Files, maxRejectedPerSession)
+	ex.Invariants = cleanRules(ex.Invariants, in.Files, maxInvariantsPerSession)
 
 	claims := ex.Claims[:0]
 	for _, c := range ex.Claims {
@@ -467,16 +406,102 @@ func sanitize(ex *Extraction, in Input) {
 	ex.Claims = dedupStrings(claims)
 }
 
-// restatesSubject drops a "why" that is the author's own subject line back again.
-// It happens when a session's requests carry no reason at all, and it is the one
-// case where the record is strictly worse than silence: the reader has the
-// subject one line above.
-func restatesSubject(why, subject string) bool {
-	subject = strings.TrimSpace(subject)
-	return subject != "" && sameThing(why, subject)
+// cleanRules enforces what the prompt asks of one list of rules.
+func cleanRules(in []Rule, staged []string, max int) []Rule {
+	out := in[:0]
+	for _, r := range in {
+		r.Rule = clean(r.Rule, maxRule)
+		r.Why = clean(r.Why, maxWhy)
+		switch {
+		case r.Rule == "" || r.Why == "":
+			// Half a rule is worse than none: with no reason it reads as a bare
+			// prohibition, and the next agent either obeys it blindly or re-opens it.
+			continue
+		case emptyReason(r.Why):
+			// "Not chosen" is not a reason. The prompt says so; models still do it.
+			continue
+		case sameThing(r.Rule, r.Why):
+			continue // the reason merely repeats the rule
+		case describesThisChange(r.Rule):
+			continue // a report of this commit, not a rule for the next one
+		}
+		r.Files = bindFiles(r.Files, staged)
+		if len(r.Files) == 0 {
+			continue
+		}
+		out = append(out, r)
+	}
+	out = dedupRules(out)
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out
 }
 
-// emptyReason recognises a "because" that says only that the option lost.
+// bindFiles resolves the paths a rule names against the files the commit stages.
+//
+// A model names a file the way it saw it — absolute, or relative to somewhere
+// else — while git records repo-relative paths, and recall runs `git log --
+// <path>`. So a rule that cannot be tied to a staged path is not "unscoped", it
+// is undeliverable: no reader will ever open a file it matches. It is dropped,
+// which costs one rule, rather than written, which costs every future reader the
+// bytes and teaches them nothing.
+//
+// The single-file commit is the exception worth handling: there the model had one
+// possible answer and leaving the field empty is a formatting slip, not an
+// ambiguity. That only applies to an empty list — a rule that names a file and
+// names the wrong one has said something, and overriding it with a guess would
+// bind it to code it was never about.
+func bindFiles(named, staged []string) []string {
+	if len(named) == 0 && len(staged) == 1 {
+		return []string{staged[0]}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range named {
+		m := matchStaged(n, staged)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	if len(out) > maxFiles {
+		out = out[:maxFiles]
+	}
+	return out
+}
+
+// matchStaged returns the staged path a named one refers to, or "".
+//
+// Matching is on separator boundaries in both directions — the name may be an
+// absolute path holding the staged one, or a repo-relative path the model wrote
+// from a subdirectory — and falls back to the base name, which is unambiguous in
+// every commit that does not stage two files with the same name.
+func matchStaged(named string, staged []string) string {
+	n := strings.TrimSpace(named)
+	if n == "" {
+		return ""
+	}
+	n = filepath.ToSlash(filepath.Clean(n))
+	base := path.Base(n)
+	var byBase string
+	for _, s := range staged {
+		s = filepath.ToSlash(filepath.Clean(s))
+		switch {
+		case n == s, strings.HasSuffix(n, "/"+s), strings.HasSuffix(s, "/"+n):
+			return s
+		case path.Base(s) == base:
+			if byBase != "" {
+				return "" // two staged files share the name: refuse to guess
+			}
+			byBase = s
+		}
+	}
+	return byBase
+}
+
+// emptyReason recognises a "why" that says only that the option lost.
 //
 // These are the reasons that make a record unusable: a later agent reading "not
 // chosen" learns that someone once said no, and nothing about whether the no
@@ -517,35 +542,22 @@ func describesThisChange(s string) bool {
 	return false
 }
 
-func normalizeScope(scope []string) []string {
-	out := scope[:0]
-	seen := map[string]bool{}
-	for _, s := range scope {
-		s = strings.TrimSpace(s)
-		if s == "" || s == "*" || s == "**" || s == "." || s == "/" || seen[s] {
-			continue // a scope covering everything carries no information
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	if len(out) > maxScope {
-		out = out[:maxScope]
-	}
-	return out
-}
-
 // Per-session caps. They are the same numbers the prompt states, enforced here
 // because a model that ignores "at most three" ignores it by a wide margin.
 // Merging several sessions may exceed them; that is the merge's business, since a
 // commit spanning four sessions legitimately carries more than one did.
+//
+// maxRule is the one number with an external constraint behind it. The reactive
+// injection is capped at 10 000 characters by the harnesses, and the design goal
+// is fifty commits of a file's history inside that — roughly two rules per commit
+// at 110 characters plus their commit line. A rule that will not fit in 110
+// characters is carrying its own justification, which belongs in Why.
 const (
-	maxWhy                  = 600
-	maxOption               = 160
-	maxBecause              = 400
-	maxRule                 = 240
+	maxRule                 = 110
+	maxWhy                  = 300
+	maxFiles                = 3
 	maxClaim                = 300
 	maxClaims               = 6
-	maxScope                = 6
 	maxRejectedPerSession   = 3
 	maxInvariantsPerSession = 2
 )
@@ -559,11 +571,4 @@ func clean(s string, max int) string {
 		}
 	}
 	return transcript.Truncate(s, max)
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
-	}
-	return s
 }

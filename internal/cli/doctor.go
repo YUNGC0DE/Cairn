@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,10 +12,8 @@ import (
 	"github.com/YUNGC0DE/git-cairn/internal/config"
 	"github.com/YUNGC0DE/git-cairn/internal/gitx"
 	"github.com/YUNGC0DE/git-cairn/internal/llm"
-	"github.com/YUNGC0DE/git-cairn/internal/sqlitex"
 	"github.com/YUNGC0DE/git-cairn/internal/transcript/claudecode"
-	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursorcli"
-	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
+	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursor"
 )
 
 func cmdDoctor(env *Env, args []string) error {
@@ -85,27 +82,16 @@ func cmdDoctor(env *Env, args []string) error {
 		}
 	}
 
-	if sqlitex.Available() {
-		line(ok, "sqlite3", pathOf("sqlite3"))
-	} else {
-		line(warn, "sqlite3", "missing — Cursor sessions degrade to prompts only")
-	}
-
 	// Transcript sources.
 	if d := claudecode.DefaultRoot(); dirExists(d) {
 		line(ok, "claude-code transcripts", d)
 	} else {
 		line(warn, "claude-code transcripts", d+" (absent)")
 	}
-	if d := cursorcli.DefaultRoot(); dirExists(d) {
-		line(ok, "cursor-cli transcripts", d)
+	if d := cursor.DefaultRoot(); dirExists(d) {
+		line(ok, "cursor transcripts", d)
 	} else {
-		line(warn, "cursor-cli transcripts", d+" (absent)")
-	}
-	if db := cursoride.New().GlobalDB(); fileExists(db) {
-		line(ok, "cursor-ide transcripts", db)
-	} else {
-		line(warn, "cursor-ide transcripts", db+" (absent)")
+		line(warn, "cursor transcripts", d+" (absent)")
 	}
 
 	if repoErr == nil {
@@ -207,7 +193,7 @@ func cmdSessions(env *Env, args []string) error {
 	for _, r := range refs {
 		c := offsets.Get(r.Key)
 		state := "new"
-		if c.Bytes > 0 || c.Count > 0 {
+		if c.Bytes > 0 {
 			state = "read to " + c.String()
 		}
 		fmt.Fprintf(env.Out, "%-12s %-10s %s  %s\n", r.Agent, short(r.ID),
@@ -217,13 +203,6 @@ func cmdSessions(env *Env, args []string) error {
 		}
 	}
 	return nil
-}
-
-func pathOf(bin string) string {
-	if p, err := exec.LookPath(bin); err == nil {
-		return p
-	}
-	return ""
 }
 
 func dirExists(p string) bool {

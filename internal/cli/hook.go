@@ -334,8 +334,12 @@ func distilledBy(res *distill.Result) string {
 	return res.Engine
 }
 
-// agentLabel renders "claude-code/sonnet", naming the agent that did the work
-// and the model that distilled it when they differ.
+// agentLabel renders "claude-code/opus-5 (distilled by sonnet)", naming the agent
+// that did the work and the model that distilled it when they differ.
+//
+// A session whose transcript does not record its model contributes just the agent
+// name. It used to contribute "cursor/?", which read as a parse failure on every
+// Cursor commit, and the distiller is already named in the same line.
 func agentLabel(sessions []*transcript.Session, distillModel string) string {
 	var agents, models []string
 	for _, s := range sessions {
@@ -347,8 +351,6 @@ func agentLabel(sessions []*transcript.Session, distillModel string) string {
 	label := strings.Join(record.Dedup(agents), "+")
 	if len(models) > 0 {
 		label += "/" + strings.Join(record.Dedup(models), "+")
-	} else if distillModel != "" {
-		label += "/?"
 	}
 	if distillModel != "" {
 		label += " (distilled by " + distillModel + ")"

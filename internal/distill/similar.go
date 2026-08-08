@@ -37,21 +37,10 @@ const dupThreshold = 0.55
 // hold" scores 0.50 on boilerplate alone.
 const invSoftThreshold = 0.32
 
-// whyDupThreshold is deliberately stricter than dupThreshold.
-//
-// Two sessions behind one commit routinely restate the same intention in words
-// that share almost no vocabulary — measured on this repository's own history, a
-// real pair of restated intentions scored 0.25 — so a lexical measure was never
-// going to catch those, and lowering the bar until it did would start folding two
-// genuinely different intentions into one. Length is what catches restatement
-// here (see mergeWhy); similarity only catches the near-verbatim case, and it has
-// to be sure, because a folded-away "why" is a session's purpose lost.
-const whyDupThreshold = 0.7
-
-// sameThreshold is for asking whether one string is a rewrite of another (a
-// reason that only repeats its option, a "why" that is the subject line again).
-// It is higher because the answer means "this says nothing new", which is a
-// stronger claim than "these are the same topic".
+// sameThreshold is for asking whether one string is a rewrite of another — a
+// "why" that only repeats the rule it is supposed to justify. It is higher
+// because the answer means "this says nothing new", which is a stronger claim
+// than "these are the same topic".
 const sameThreshold = 0.75
 
 // similar reports whether two strings say the same thing, by token overlap.
@@ -203,70 +192,24 @@ var stopword = map[string]bool{
 	"instead": true, "rather": true, "into": true, "over": true, "per": true,
 }
 
-// mergeWhy keeps the first statement of each distinct intention, within a budget,
-// and reports what it left out.
-//
-// First, not last: the sessions arrive oldest-first, and the earliest statement of
-// a purpose is the one closest to the request that prompted it. Later sessions
-// restate it in terms of the work already done, which is drift.
-//
-// The budget is the part that actually fixes the complaint. A record is supposed
-// to open with a few sentences on what was wanted; six sessions each contributing
-// their own version is not six times as informative, it is the same paragraph six
-// times, and it is the first thing a reader sees. Rejections and invariants have
-// no equivalent cap — those are facts a later agent cannot re-derive from the
-// diff, and dropping one loses it for good — but a seventh restatement of the
-// same intention is not a fact, it is volume.
-func mergeWhy(in []string) (kept []string, dropped int) {
-	spent := 0
-	for _, w := range in {
-		if w = strings.TrimSpace(w); w == "" {
-			continue
-		}
-		dup := false
-		for _, k := range kept {
-			if similar(w, k, whyDupThreshold) {
-				dup = true
-				break
-			}
-		}
-		if dup {
-			dropped++
-			continue
-		}
-		if len(kept) >= maxMergedWhy || spent+len(w) > whyBudget {
-			dropped++
-			continue
-		}
-		spent += len(w)
-		kept = append(kept, w)
-	}
-	return kept, dropped
-}
-
-// How much of a merged record may be spent on intention. One session's "why" is
-// capped at maxWhy (600 bytes) by the prompt and the sanitiser; a commit made of
-// many sessions gets room for a couple of genuinely different intentions and no
-// more.
-const (
-	maxMergedWhy = 3
-	whyBudget    = 900
-)
-
-// dedupRejected folds rewordings of the same rejected option together, keeping
-// the entry whose reason says more — two sessions arguing the same option down
-// rarely explain it equally well.
-func dedupRejected(in []Rejected) []Rejected {
-	var out []Rejected
+// dedupRules folds rewordings of the same rule together, keeping the phrasing
+// whose "why" says more — two sessions arguing the same point down rarely explain
+// it equally well — and the union of the files both named, since a rule that
+// binds two files does not stop binding one of them because a session missed it.
+func dedupRules(in []Rule) []Rule {
+	var out []Rule
 	for _, r := range in {
 		merged := false
 		for i, kept := range out {
-			if !similar(r.Option, kept.Option, dupThreshold) {
+			if !similarInvariant(r.Rule, kept.Rule) {
 				continue
 			}
-			if len(r.Because) > len(kept.Because) {
-				out[i] = r
+			winner, loser := kept, r
+			if len(r.Why) > len(kept.Why) {
+				winner, loser = r, kept
 			}
+			winner.Files = unionFiles(winner.Files, loser.Files)
+			out[i] = winner
 			merged = true
 			break
 		}
@@ -277,31 +220,18 @@ func dedupRejected(in []Rejected) []Rejected {
 	return out
 }
 
-// dedupInvariants folds rewordings of the same rule together, keeping the more
-// tightly scoped one: a rule that names the paths it binds is served to the
-// agents it applies to, while an unscoped copy of it is served to everyone.
-func dedupInvariants(in []Invariant) []Invariant {
-	var out []Invariant
-	for _, c := range in {
-		merged := false
-		for i, kept := range out {
-			if !similarInvariant(c.Rule, kept.Rule) {
-				continue
-			}
-			switch {
-			case len(kept.Scope) == 0 && len(c.Scope) > 0:
-				out[i] = c
-			case len(c.Scope) > 0 && len(kept.Scope) > 0 && len(c.Rule) > len(kept.Rule):
-				// Prefer the clearer phrasing when both are scoped: a longer
-				// rule usually names the constraint more completely.
-				out[i] = c
-			}
-			merged = true
-			break
+func unionFiles(a, b []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range append(append([]string{}, a...), b...) {
+		if s == "" || seen[s] {
+			continue
 		}
-		if !merged {
-			out = append(out, c)
-		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) > maxFiles {
+		out = out[:maxFiles]
 	}
 	return out
 }

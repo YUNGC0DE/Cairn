@@ -1,4 +1,4 @@
-// Package record is Cairn's wire format: the prose and trailers written into a
+// Package record is Cairn's wire format: the rules and trailers written into a
 // commit, and the reader that gets them back out.
 //
 // Trailers are parsed and written by git's own `interpret-trailers`, never by a
@@ -7,9 +7,9 @@
 package record
 
 import (
-	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/YUNGC0DE/git-cairn/internal/distill"
 	"github.com/YUNGC0DE/git-cairn/internal/gitx"
@@ -29,20 +29,10 @@ const (
 // The record's own delimiters.
 //
 // Everything Cairn writes into a commit message lives between these two lines,
-// and nothing else does. Before them the record was loose prose recognised by
-// capitalised prefixes, which cost more than it looks:
-//
-//   - git's trailer parser folded a short "Invariant: …" line into the trailer
-//     block, so reading a record back depended on how git had grouped paragraphs;
-//   - a wrapped entry's continuation lines had to be re-attached by guessing,
-//     which is how a read-back could come out shuffled;
-//   - the reactive channel had no way to tell the author's own words from
-//     Cairn's, so it cut the message at a list of known bookkeeping prefixes and
-//     hoped.
-//
-// A closing tag on its own also ends the message with a paragraph that is not
-// trailer-shaped, so `interpret-trailers` appends a clean trailer block after it
-// instead of merging into whatever the record's last line happened to look like.
+// and nothing else does. A closing tag on its own also ends the message with a
+// paragraph that is not trailer-shaped, so `interpret-trailers` appends a clean
+// trailer block after it instead of merging into whatever the record's last line
+// happened to look like.
 const (
 	OpenTag  = "<git-cairn>"
 	CloseTag = "</git-cairn>"
@@ -52,109 +42,52 @@ const (
 // lines are indented, which is the whole grammar: no key can be confused with a
 // wrapped line, and no wrapped line can be confused with a git trailer.
 const (
-	whyKey         = "why:"
-	rejectedKey    = "rejected:"
-	becauseKey     = "because:"
-	invariantKey   = "invariant:"
-	scopeKey       = "scope:"
-	unconfirmedKey = "unconfirmed:"
+	RejectKey    = "reject:"
+	InvariantKey = "invariant:"
+	whyKey       = "why:"
+	fileKey      = "file:"
 )
-
-// Legacy prefixes, from before the block existed. They are still read, because
-// the records already written with them are the whole point of the tool — a
-// format change that silently blanks a repository's history would be worse than
-// the format it replaced. They are never written.
-//
-// Open: and Next: are recognised only so they can be discarded: they held the
-// state of the work at one instant, which is stale by the next commit, and the
-// reactive channel was already cutting them before serving a record.
-const (
-	legacyRejected    = "Rejected: "
-	legacyInvariant   = "Invariant: "
-	legacyOpen        = "Open: "
-	legacyNext        = "Next: "
-	legacyUnconfirmed = "Cairn could not confirm against the diff: "
-)
-
-// Limits keep a record from swallowing the commit message (the risk being "commit
-// messages bloat, the team revolts").
-//
-// They were originally much tighter — four rejections, three invariants — and
-// that was wrong once the record started being read back into agents. The
-// overflow is only reachable through `cairn rejected`, which is a command a
-// human runs; an agent handed the record on a file touch never sees it. So a
-// rejection dropped here is not "available elsewhere", it is lost from the one
-// channel that would have used it, and lost permanently, because the record is
-// written once and read many times.
-//
-// The bloat risk is real but was never measured, and it is the cheaper of the
-// two: a long commit message is annoying, a forgotten rejection gets rebuilt.
-const (
-	maxRejectedRendered  = 12
-	maxInvariantRendered = 10
-)
-
-// Meta is the machine-readable half of a record.
-type Meta struct {
-	Agent       string // "claude-code/opus-5"
-	Sessions    []string
-	Files       []string
-	Transcripts []string
-	Confidence  distill.Confidence
-	Disputed    []string
-}
 
 // Body renders the record as one <git-cairn> block. Returns "" when there is
 // nothing worth saying — an empty block is worse than no block, because a reader
 // who finds one stops looking for the reasoning elsewhere.
 //
-// Every entry is one paragraph, so the block reads as a short list rather than a
-// wall: the complaint that produced this layout was not that records were wrong
-// but that they were unreadable.
+// Every rule is one paragraph: the rule itself at column zero, then the
+// justification and the files it binds, indented under it. The rule line is the
+// only part the reactive channel ever serves; the rest is here for whoever
+// follows the commit back.
 func Body(res *distill.Result) string {
 	if res == nil || res.Extraction == nil {
 		return ""
 	}
 	ex := res.Extraction
 	var paras []string
-	for _, w := range ex.Why {
-		if w = strings.TrimSpace(w); w != "" {
-			paras = append(paras, field(whyKey, w))
-		}
+	for _, r := range ex.Rejected {
+		paras = append(paras, rule(RejectKey, r))
 	}
-
-	for i, r := range ex.Rejected {
-		if i >= maxRejectedRendered {
-			paras = append(paras, fmt.Sprintf("%s (+%d more not recorded)",
-				rejectedKey, len(ex.Rejected)-i))
-			break
-		}
-		paras = append(paras, field(rejectedKey, r.Option)+"\n"+subfield(becauseKey, r.Because))
+	for _, r := range ex.Invariants {
+		paras = append(paras, rule(InvariantKey, r))
 	}
-
-	for i, c := range ex.Invariants {
-		if i >= maxInvariantRendered {
-			break
-		}
-		entry := field(invariantKey, c.Rule)
-		if len(c.Scope) > 0 {
-			entry += "\n" + subfield(scopeKey, strings.Join(c.Scope, ", "))
-		}
-		paras = append(paras, entry)
-	}
-
-	// A contradicted claim is never rendered as fact. It is named, in the open, so
-	// the next reader knows the record and the code disagree — and named here
-	// rather than only in a trailer, because the trailers are cut before an agent
-	// is served the record.
-	for _, d := range res.DisputedClaims() {
-		paras = append(paras, field(unconfirmedKey, d.Claim))
-	}
-
 	if len(paras) == 0 {
 		return ""
 	}
 	return OpenTag + "\n" + strings.Join(paras, "\n\n") + "\n" + CloseTag
+}
+
+// rule renders one entry: the instruction, why it holds, and what it binds.
+func rule(key string, r distill.Rule) string {
+	out := field(key, r.Rule)
+	if w := strings.TrimSpace(r.Why); w != "" {
+		out += "\n" + subfield(whyKey, w)
+	}
+	if len(r.Files) > 0 {
+		// Never wrapped, however long the list gets. A wrapped path list cannot be
+		// read back unambiguously — a continuation line is indistinguishable from
+		// the tail of a wrapped sentence — so the one line that must survive a
+		// round trip intact is the one line that does not wrap.
+		out += "\n  " + fileKey + " " + strings.Join(r.Files, ", ")
+	}
+	return out
 }
 
 // field renders "key: value", wrapping continuation lines under a two-space
@@ -168,10 +101,20 @@ func field(key, value string) string {
 //
 // The first-line indent has to be passed in rather than glued onto the text:
 // wrapping splits on whitespace, so a leading indent inside the string is simply
-// dropped — which is how "  because:" shipped at column zero and broke the one
+// dropped — which is how "  why:" would ship at column zero and break the one
 // rule the grammar has.
 func subfield(key, value string) string {
 	return wrapIndent(key+" "+strings.TrimSpace(value), "  ", "    ")
+}
+
+// Meta is the machine-readable half of a record.
+type Meta struct {
+	Agent       string // "claude-code/opus-5"
+	Sessions    []string
+	Files       []string
+	Transcripts []string
+	Confidence  distill.Confidence
+	Disputed    []string
 }
 
 // Trailers renders the machine-readable half, in the order they should appear.
@@ -190,8 +133,8 @@ func (m Meta) Trailers() [][2]string {
 }
 
 // Compose builds a full commit message: the author's existing message, then the
-// record's prose, then trailers. The author's subject and body are never
-// rewritten — Cairn appends, so a human's words always survive.
+// record, then trailers. The author's subject and body are never rewritten —
+// Cairn appends, so a human's words always survive.
 func Compose(repoDir, existing, body string, meta Meta) (string, error) {
 	existing = strings.TrimRight(existing, "\n")
 	msg := existing
@@ -205,14 +148,44 @@ func Compose(repoDir, existing, body string, meta Meta) (string, error) {
 	return gitx.AddTrailers(repoDir, msg+"\n", meta.Trailers())
 }
 
+// Entry is one parsed rule.
+type Entry struct {
+	Rule  string   `json:"rule"`
+	Why   string   `json:"why,omitempty"`
+	Files []string `json:"files,omitempty"`
+}
+
+// Binds reports whether this rule is about the given repo-relative path.
+//
+// A rule with no file binds nothing. That is the whole point of a file-level
+// record: an entry that reaches every reader of every commit that happened to
+// touch this file is the noise the format exists to remove.
+//
+// The base-name fallback is for a file that moved. Callers only ask this of
+// commits `git log --follow -- <path>` already attributed to that one file, so
+// within that set a matching base name is the same file under a new directory,
+// not a coincidence.
+func (e Entry) Binds(path string) bool {
+	path = strings.TrimPrefix(path, "./")
+	base := path[strings.LastIndexByte(path, '/')+1:]
+	for _, f := range e.Files {
+		f = strings.TrimPrefix(f, "./")
+		if f == path || f[strings.LastIndexByte(f, '/')+1:] == base {
+			return true
+		}
+	}
+	return false
+}
+
 // Record is a parsed record read back out of a commit.
 type Record struct {
 	SHA         string
 	Short       string
 	Subject     string
-	Why         []string
-	Rejected    []string
-	Invariants  []string
+	When        time.Time
+	Author      string
+	Rejected    []Entry
+	Invariants  []Entry
 	Disputed    []string
 	Agent       string
 	Sessions    []string
@@ -224,10 +197,29 @@ type Record struct {
 // Has reports whether a commit carries a Cairn record at all.
 func (r *Record) Has() bool { return r != nil && r.Agent != "" }
 
+// Rules returns every entry the record carries that binds path, rejections
+// first. Callers serving an agent want exactly this and nothing else.
+func (r *Record) Rules(path string) (rejected, invariants []Entry) {
+	if r == nil {
+		return nil, nil
+	}
+	for _, e := range r.Rejected {
+		if e.Binds(path) {
+			rejected = append(rejected, e)
+		}
+	}
+	for _, e := range r.Invariants {
+		if e.Binds(path) {
+			invariants = append(invariants, e)
+		}
+	}
+	return rejected, invariants
+}
+
 // Parse reads a record out of a commit message. Trailers come from git's own
-// parser; the prose lines are recognised by their prefixes.
+// parser; the rules come from the <git-cairn> block.
 func Parse(repoDir string, c gitx.Commit) (*Record, error) {
-	rec := &Record{SHA: c.SHA, Short: c.Short, Subject: c.Subject}
+	rec := &Record{SHA: c.SHA, Short: c.Short, Subject: c.Subject, When: c.When, Author: c.Author}
 	trailers, err := gitx.ParseTrailers(repoDir, c.Message())
 	if err != nil {
 		return nil, err
@@ -242,11 +234,8 @@ func Parse(repoDir string, c gitx.Commit) (*Record, error) {
 			rec.Disputed = append(rec.Disputed, t[1])
 		}
 	}
-
 	if body, ok := blockIn(c.Body); ok {
 		parseBlock(rec, body)
-	} else {
-		parseLegacy(rec, c.Body, trailers)
 	}
 	rec.Disputed = Dedup(rec.Disputed)
 	return rec, nil
@@ -268,8 +257,7 @@ func blockIn(msg string) (string, bool) {
 		return rest[:j], true
 	}
 	// An unterminated block is still a block: a truncated message should give up
-	// its reasoning, not be silently reclassified as an old-format record and
-	// re-read by a parser that would mangle it.
+	// what rules it has rather than none at all.
 	return rest, true
 }
 
@@ -277,43 +265,33 @@ func blockIn(msg string) (string, bool) {
 // indented line either opens a subfield or continues the line above it, and a
 // blank line closes the entry.
 func parseBlock(rec *Record, body string) {
-	var cur *string     // the line an indented continuation extends
-	var pending *string // the entry a because:/scope: subfield belongs to
-
-	appendTo := func(list *[]string, s string) *string {
-		*list = append(*list, s)
-		return &(*list)[len(*list)-1]
+	var cur *Entry   // the entry being built
+	var cont *string // the string an indented continuation line extends
+	open := func(list *[]Entry, text string) {
+		*list = append(*list, Entry{Rule: text})
+		cur = &(*list)[len(*list)-1]
+		cont = &cur.Rule
 	}
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		indented := line != "" && (line[0] == ' ' || line[0] == '\t')
 		switch {
 		case trimmed == "":
-			cur, pending = nil, nil
-		case !indented && hasKey(trimmed, whyKey):
-			cur = appendTo(&rec.Why, value(trimmed, whyKey))
-			pending = cur
-		case !indented && hasKey(trimmed, rejectedKey):
-			cur = appendTo(&rec.Rejected, value(trimmed, rejectedKey))
-			pending = cur
-		case !indented && hasKey(trimmed, invariantKey):
-			cur = appendTo(&rec.Invariants, value(trimmed, invariantKey))
-			pending = cur
-		case !indented && hasKey(trimmed, unconfirmedKey):
-			cur = appendTo(&rec.Disputed, value(trimmed, unconfirmedKey))
-			pending = cur
-		// because: and scope: belong to the entry above them. They are folded into
-		// that entry's text rather than kept apart, because every reader of a
-		// record — human or agent — wants the reason next to the option, and
-		// nothing downstream has ever wanted them separately.
-		case hasKey(trimmed, becauseKey) && pending != nil:
-			*pending += " — " + value(trimmed, becauseKey)
-			cur = pending
-		case hasKey(trimmed, scopeKey) && pending != nil:
-			*pending += " (" + value(trimmed, scopeKey) + ")"
-			cur = pending
-		case cur != nil:
-			*cur += " " + trimmed
+			cur, cont = nil, nil
+		case !indented && hasKey(trimmed, RejectKey):
+			open(&rec.Rejected, value(trimmed, RejectKey))
+		case !indented && hasKey(trimmed, InvariantKey):
+			open(&rec.Invariants, value(trimmed, InvariantKey))
+		case cur == nil:
+			// A line outside any entry: the author's own words, or a stray.
+		case hasKey(trimmed, whyKey):
+			cur.Why = value(trimmed, whyKey)
+			cont = &cur.Why
+		case hasKey(trimmed, fileKey):
+			cur.Files = append(cur.Files, splitList(value(trimmed, fileKey))...)
+			cont = nil // a wrapped path list would be ambiguous; do not guess
+		case cont != nil:
+			*cont += " " + trimmed
 		}
 	}
 }
@@ -339,83 +317,6 @@ func hasKey(line, key string) bool {
 
 func value(line, key string) string {
 	return strings.TrimSpace(line[len(key):])
-}
-
-// parseLegacy reads the pre-block format: capitalised prefixes in free prose,
-// with wrapped entries continuing until a blank line. It exists only for records
-// already in a repository's history.
-func parseLegacy(rec *Record, body string, trailers [][2]string) {
-	var prose []string
-	const (
-		inProse = iota
-		inRejected
-		inInvariant
-		inDropped
-		inDisputed
-	)
-	block := inProse
-	appendTo := func(target *[]string, s string) {
-		if n := len(*target); n > 0 {
-			(*target)[n-1] += " " + s
-		} else {
-			*target = append(*target, s)
-		}
-	}
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case trimmed == "":
-			block = inProse
-		// Prefixes are matched before the trailer check on purpose. A short
-		// "Invariant: …" line is shaped like a trailer, so git folds it into the
-		// trailer block and its own parser reports it as one — which is exactly the
-		// ambiguity the <git-cairn> block was introduced to remove.
-		case strings.HasPrefix(trimmed, legacyRejected):
-			block = inRejected
-			rec.Rejected = append(rec.Rejected, strings.TrimPrefix(trimmed, legacyRejected))
-		case strings.HasPrefix(trimmed, legacyInvariant):
-			block = inInvariant
-			rec.Invariants = append(rec.Invariants, strings.TrimPrefix(trimmed, legacyInvariant))
-		case strings.HasPrefix(trimmed, legacyOpen), strings.HasPrefix(trimmed, legacyNext):
-			block = inDropped // recognised so it is not mistaken for prose, then dropped
-		case strings.HasPrefix(trimmed, legacyUnconfirmed):
-			block = inDisputed
-			rec.Disputed = append(rec.Disputed, strings.TrimPrefix(trimmed, legacyUnconfirmed))
-		case isTrailerLine(trailers, trimmed):
-			block = inProse
-		default:
-			switch block {
-			case inRejected:
-				appendTo(&rec.Rejected, trimmed)
-			case inInvariant:
-				appendTo(&rec.Invariants, trimmed)
-			case inDisputed:
-				appendTo(&rec.Disputed, trimmed)
-			case inDropped:
-			default:
-				prose = append(prose, trimmed)
-			}
-		}
-	}
-	if s := strings.TrimSpace(strings.Join(prose, " ")); s != "" {
-		rec.Why = []string{s}
-	}
-}
-
-// isTrailerLine reports whether a body line is one of the parsed trailers, so
-// prose extraction does not swallow them.
-func isTrailerLine(trailers [][2]string, line string) bool {
-	k, v, ok := strings.Cut(line, ":")
-	if !ok {
-		return false
-	}
-	k, v = strings.TrimSpace(k), strings.TrimSpace(v)
-	for _, t := range trailers {
-		if strings.EqualFold(t[0], k) && t[1] == v {
-			return true
-		}
-	}
-	return false
 }
 
 func splitList(s string) []string {

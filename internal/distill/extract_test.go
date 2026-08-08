@@ -14,7 +14,7 @@ import (
 )
 
 // perSession answers each extraction with a record naming the session it saw,
-// so a test can tell whose intent survived.
+// so a test can tell whose decisions survived.
 type perSession struct {
 	calls   atomic.Int32
 	prompts []string
@@ -29,19 +29,19 @@ func (p *perSession) Complete(_ context.Context, req llm.Request) (*llm.Response
 	if strings.Contains(req.System, "verification pass") {
 		return &llm.Response{Text: `{"claims":[]}`, Engine: p.Name()}, nil
 	}
-	who := "unknown"
-	for _, tag := range []string{"ALPHA", "BETA"} {
+	who, file := "unknown", "a.go"
+	for tag, f := range map[string]string{"ALPHA": "a.go", "BETA": "b.go"} {
 		if strings.Contains(req.Prompt, tag) {
-			who = tag
+			who, file = tag, f
 		}
 	}
 	p.prompts = append(p.prompts, who)
 	return &llm.Response{Engine: p.Name(), Text: fmt.Sprintf(`{
-	  "why": "%s wanted the %s thing done for the %s reason",
-	  "rejected": [{"option": "%s option", "because": "%s reason"}],
-	  "invariants": [{"rule": "the shared rule that must always hold", "scope": ["internal/**"]}],
+	  "rejected": [{"rule": "%s option", "why": "%s reason", "files": ["%s"]}],
+	  "invariants": [{"rule": "the shared rule that must always hold",
+	                  "why": "a reason both sessions gave", "files": ["%s"]}],
 	  "claims": ["%s claim"]
-	}`, who, who, who, who, who, who)}, nil
+	}`, who, who, file, file, who)}, nil
 }
 
 func sessionSaying(id, tag, file string) *transcript.Session {
@@ -58,7 +58,7 @@ func sessionSaying(id, tag, file string) *transcript.Session {
 // TestCommitGranularityDoesNotChangeTheRecord is the rule behind per-session
 // extraction: committing after every session and committing everything at once
 // must carry the same information. One shared prompt budget could not do that —
-// the second session's intent was squeezed out by the first.
+// the second session's decisions were squeezed out by the first.
 func TestCommitGranularityDoesNotChangeTheRecord(t *testing.T) {
 	in := Input{
 		Sessions: []*transcript.Session{
@@ -79,12 +79,9 @@ func TestCommitGranularityDoesNotChangeTheRecord(t *testing.T) {
 		t.Fatalf("extraction calls = %d, want one per session: %v", got, eng.prompts)
 	}
 	for _, tag := range []string{"ALPHA", "BETA"} {
-		if !strings.Contains(strings.Join(res.Extraction.Why, " "), tag+" wanted") {
-			t.Errorf("%s's intent was lost:\n%s", tag, res.Extraction.Why)
-		}
 		var found bool
 		for _, r := range res.Extraction.Rejected {
-			if strings.Contains(r.Option, tag) {
+			if strings.Contains(r.Rule, tag) {
 				found = true
 			}
 		}
@@ -92,14 +89,14 @@ func TestCommitGranularityDoesNotChangeTheRecord(t *testing.T) {
 			t.Errorf("%s's rejected alternative was lost: %+v", tag, res.Extraction.Rejected)
 		}
 	}
-	// A rule both sessions stated is one rule, not two.
+	// A rule both sessions stated is one rule, not two — and it binds both files,
+	// because a rule does not stop binding a.go because the session that wrote
+	// b.go phrased it better.
 	if n := len(res.Extraction.Invariants); n != 1 {
-		t.Errorf("invariants = %d, want the duplicate merged: %+v", n, res.Extraction.Invariants)
+		t.Fatalf("invariants = %d, want the duplicate merged: %+v", n, res.Extraction.Invariants)
 	}
-	// Two sessions that wanted different things are two entries, not one blended
-	// paragraph.
-	if n := len(res.Extraction.Why); n != 2 {
-		t.Errorf("why entries = %d, want one per distinct intention: %q", n, res.Extraction.Why)
+	if n := len(res.Extraction.Invariants[0].Files); n != 2 {
+		t.Errorf("merged invariant binds %v, want both files", res.Extraction.Invariants[0].Files)
 	}
 }
 
@@ -122,18 +119,14 @@ func TestRewordedDuplicatesAreFoldedTogether(t *testing.T) {
 	}
 	ex := res.Extraction
 	if len(ex.Rejected) != 1 {
-		t.Errorf("rejected = %+v, want the same option counted once", ex.Rejected)
+		t.Fatalf("rejected = %+v, want the same option counted once", ex.Rejected)
 	}
 	// Of two wordings of one rejection, the one that explains more survives.
-	if !strings.Contains(ex.Rejected[0].Because, "5.4GB") {
-		t.Errorf("kept the thinner reason: %q", ex.Rejected[0].Because)
+	if !strings.Contains(ex.Rejected[0].Why, "5.4GB") {
+		t.Errorf("kept the thinner reason: %q", ex.Rejected[0].Why)
 	}
 	if len(ex.Invariants) != 1 {
 		t.Errorf("invariants = %+v, want one", ex.Invariants)
-	}
-	// Of two wordings of one rule, the scoped one is served to fewer agents.
-	if len(ex.Invariants[0].Scope) == 0 {
-		t.Errorf("kept the unscoped wording, which is served to every file: %+v", ex.Invariants[0])
 	}
 	// The merge says what it folded away, so a thinner record is explainable.
 	if !strings.Contains(strings.Join(res.Notes, " "), "worded twice") {
@@ -141,25 +134,25 @@ func TestRewordedDuplicatesAreFoldedTogether(t *testing.T) {
 	}
 }
 
-// Invariants about the same property often share an identifier but little else.
+// Rules about the same property often share an identifier but little else.
 // Plain token overlap at dupThreshold misses them; the heavy-token check must
 // still leave genuinely different rules ("first" vs "second") alone.
-func TestInvariantRestatementsSharingAnIdentifierAreFolded(t *testing.T) {
-	in := []Invariant{
-		{Rule: "The installed binary name is git-cairn so git discovers it as a subcommand; displayed help must follow argv[0].", Scope: []string{"internal/cli/**"}},
-		{Rule: "Ship the binary as git-cairn so git finds it as a subcommand, keep a cairn symlink, and derive the program name from argv[0].", Scope: []string{"Makefile", "internal/cli/**"}},
-		{Rule: "Help and usage strings must take the program name from argv[0] when the binary base name is git-cairn.", Scope: []string{"internal/cli/**"}},
-		{Rule: "The hook ownership marker must remain # cairn:managed-hook across renames.", Scope: []string{"internal/cli/init.go"}},
-		{Rule: "first rule that must hold", Scope: []string{"a.go"}},
-		{Rule: "second rule that must hold", Scope: []string{"b.go"}},
+func TestRestatementsSharingAnIdentifierAreFolded(t *testing.T) {
+	in := []Rule{
+		{Rule: "The installed binary name is git-cairn so git discovers it as a subcommand; help follows argv[0].", Files: []string{"internal/cli/cli.go"}},
+		{Rule: "Ship the binary as git-cairn so git finds it as a subcommand, and derive the program name from argv[0].", Files: []string{"Makefile"}},
+		{Rule: "Help and usage strings must take the program name from argv[0] when the base name is git-cairn.", Files: []string{"internal/cli/cli.go"}},
+		{Rule: "The hook ownership marker must remain # cairn:managed-hook across renames.", Files: []string{"internal/cli/init.go"}},
+		{Rule: "first rule that must hold", Files: []string{"a.go"}},
+		{Rule: "second rule that must hold", Files: []string{"b.go"}},
 	}
-	out := dedupInvariants(in)
+	out := dedupRules(in)
 	if len(out) != 4 {
-		t.Fatalf("invariants = %d, want 4 (one git-cairn/argv rule, marker, first, second): %+v", len(out), out)
+		t.Fatalf("rules = %d, want 4 (one git-cairn/argv rule, marker, first, second): %+v", len(out), out)
 	}
 	var gitCairn int
-	for _, inv := range out {
-		if strings.Contains(inv.Rule, "git-cairn") || strings.Contains(inv.Rule, "argv") {
+	for _, r := range out {
+		if strings.Contains(r.Rule, "git-cairn") || strings.Contains(r.Rule, "argv") {
 			gitCairn++
 		}
 	}
@@ -178,72 +171,69 @@ func (r *reworder) Path() string    { return "/fake" }
 func (r *reworder) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
 	if strings.Contains(req.Prompt, "ALPHA") {
 		return &llm.Response{Engine: r.Name(), Text: `{
-		  "why": "The budget must be per session so a ten-session commit is not thinner than ten commits.",
-		  "rejected": [{"option": "Snapshot/copy state.vscdb before every read",
-		                "because": "the store measured 5.4GB and copying would dominate the commit hook"}],
-		  "invariants": [{"rule": "Large SQLite stores are opened read-only in place, not snapshotted in a hook",
-		                  "scope": ["internal/sqlitex/**"]}],
+		  "rejected": [{"rule": "Snapshot/copy state.vscdb before every read",
+		                "why": "the store measured 5.4GB and copying would dominate the commit hook",
+		                "files": ["a.go"]}],
+		  "invariants": [{"rule": "Large stores are opened read-only in place, not snapshotted in a hook",
+		                  "why": "a copy inside the hook costs more than every other step together",
+		                  "files": ["a.go"]}],
 		  "claims": []
 		}`}, nil
 	}
 	return &llm.Response{Engine: r.Name(), Text: `{
-	  "why": "The budget must be per session so a ten-session commit is not thinner than ten separate commits.",
-	  "rejected": [{"option": "Snapshot/copy Cursor's state.vscdb before every read",
-	                "because": "copying is too slow inside a hook"}],
-	  "invariants": [{"rule": "Large SQLite stores are opened read-only in place, never snapshotted in a hook"}],
+	  "rejected": [{"rule": "Snapshot/copy Cursor's state.vscdb before every read",
+	                "why": "copying is too slow inside a hook",
+	                "files": ["b.go"]}],
+	  "invariants": [{"rule": "Large stores are opened read-only in place, never snapshotted in a hook",
+	                  "why": "copying dominates the hook",
+	                  "files": ["b.go"]}],
 	  "claims": []
 	}`}, nil
 }
 
-// A commit made of many sessions must not open with the same intention restated
-// once per session. Six restatements are not six times as informative, and they
-// are the first thing any reader sees.
-func TestMergedWhyIsBounded(t *testing.T) {
+// Rules are never capped across a merge: a commit that really spans six sessions
+// carries what six commits would have, and a rule dropped here is stored nowhere
+// else.
+func TestMergedRulesAreNotCapped(t *testing.T) {
 	var sessions []*transcript.Session
-	for _, tag := range []string{"A", "B", "C", "D", "E", "F"} {
+	tags := []string{"A", "B", "C", "D", "E", "F"}
+	files := make([]string, 0, len(tags))
+	for _, tag := range tags {
 		sessions = append(sessions, sessionSaying("sess-"+tag, tag, tag+".go"))
+		files = append(files, tag+".go")
 	}
-	in := Input{Sessions: sessions, Diff: "diff --git a/A.go b/A.go\n",
-		Files: []string{"A.go", "B.go", "C.go", "D.go", "E.go", "F.go"}}
-	res, err := Run(context.Background(), &distinctWhy{}, in, Options{Budget: 30 * time.Second, SkipVerify: true})
+	in := Input{Sessions: sessions, Diff: "diff --git a/A.go b/A.go\n", Files: files}
+	res, err := Run(context.Background(), &distinctRules{}, in, Options{Budget: 30 * time.Second, SkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(res.Extraction.Why); n > maxMergedWhy {
-		t.Errorf("why entries = %d, want at most %d", n, maxMergedWhy)
-	}
-	total := 0
-	for _, w := range res.Extraction.Why {
-		total += len(w)
-	}
-	if total > whyBudget {
-		t.Errorf("why total = %d bytes, want at most %d", total, whyBudget)
-	}
-	// What was left out is reported, not hidden.
-	if !strings.Contains(strings.Join(res.Notes, " "), "was left out") {
-		t.Errorf("sessions were dropped silently: %v", res.Notes)
-	}
-	// Rejections are not capped: they are the half a later agent cannot re-derive.
 	if n := len(res.Extraction.Rejected); n != len(sessions) {
 		t.Errorf("rejected = %d, want all %d kept", n, len(sessions))
 	}
 }
 
-// distinctWhy gives every session a different intention and a different
-// rejection, so nothing is folded away as a duplicate.
-type distinctWhy struct{ n atomic.Int32 }
+// distinctRules gives every session a different rejection, so nothing is folded
+// away as a duplicate.
+type distinctRules struct{ n atomic.Int32 }
 
-func (d *distinctWhy) Name() string    { return "distinct" }
-func (d *distinctWhy) Available() bool { return true }
-func (d *distinctWhy) Path() string    { return "/fake" }
-func (d *distinctWhy) Complete(_ context.Context, _ llm.Request) (*llm.Response, error) {
+func (d *distinctRules) Name() string    { return "distinct" }
+func (d *distinctRules) Available() bool { return true }
+func (d *distinctRules) Path() string    { return "/fake" }
+func (d *distinctRules) Complete(_ context.Context, req llm.Request) (*llm.Response, error) {
 	i := d.n.Add(1)
+	file := "A.go"
+	for _, tag := range []string{"A", "B", "C", "D", "E", "F"} {
+		if strings.Contains(req.Prompt, tag+" please do the thing") {
+			file = tag + ".go"
+		}
+	}
 	return &llm.Response{Engine: d.Name(), Text: fmt.Sprintf(`{
-	  "why": "Intention number %d, which concerns a completely unrelated corner of the project and shares no vocabulary with the others: widget %d needed rewiring.",
-	  "rejected": [{"option": "alternative approach %d to widget %d", "because": "measured %d times slower on the same fixture"}],
+	  "rejected": [{"rule": "alternative approach %d to widget %d",
+	                "why": "measured %d times slower on the same fixture",
+	                "files": ["%s"]}],
 	  "invariants": [],
 	  "claims": []
-	}`, i, i, i, i, i)}, nil
+	}`, i, i, i, file)}, nil
 }
 
 // Time budget is per session, like promptBudget: two sessions must each get the
@@ -288,7 +278,7 @@ func (b *budgetProbe) Complete(_ context.Context, req llm.Request) (*llm.Respons
 	b.mu.Lock()
 	b.budgets = append(b.budgets, req.Budget)
 	b.mu.Unlock()
-	return &llm.Response{Engine: b.Name(), Text: `{"why":"x","claims":[]}`}, nil
+	return &llm.Response{Engine: b.Name(), Text: `{"rejected":[],"invariants":[],"claims":[]}`}, nil
 }
 
 // A session whose call fails must not take the others' records down with it.
@@ -306,7 +296,8 @@ func TestOneFailedSessionDoesNotLoseTheOthers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Extraction == nil || !strings.Contains(strings.Join(res.Extraction.Why, " "), "survivor") {
+	if res.Extraction == nil || len(res.Extraction.Rejected) != 1 ||
+		!strings.Contains(res.Extraction.Rejected[0].Rule, "survivor") {
 		t.Fatalf("the session that answered must still produce a record: %+v", res.Extraction)
 	}
 	var said bool
@@ -329,5 +320,8 @@ func (f *flaky) Complete(_ context.Context, req llm.Request) (*llm.Response, err
 	if f.n.Add(1) == 1 {
 		return nil, fmt.Errorf("engine exploded")
 	}
-	return &llm.Response{Engine: f.Name(), Text: `{"why":"survivor intent","claims":[]}`}, nil
+	return &llm.Response{Engine: f.Name(), Text: `{
+	  "rejected": [{"rule": "the survivor rule", "why": "a reason that survived", "files": ["b.go"]}],
+	  "invariants": [], "claims": []
+	}`}, nil
 }

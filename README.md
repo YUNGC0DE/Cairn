@@ -2,7 +2,7 @@
 <img src="assets/logo.png" alt="Git Cairn" width="70">
 <h1 align="center"><code>git-cairn</code> git-native agent memory</h1>
 <p align="left">
-<code>git-cairn</code> analyzes your agent sessions and extracts decisions, rejected alternatives, and invariants, so your next agent session understands your code better and follows the same rules.
+<code>git-cairn</code> analyzes your agent sessions and extracts, for each file the commit touched, the alternatives that were rejected and the invariants that must hold — so your next agent session follows the same rules instead of re-deriving them.
 </p>
 <p>
 <b>Works with</b>
@@ -16,10 +16,10 @@ and
 </div>
 
 1. An agent writes or changes code.
-2. During the session, decisions get made: why this approach was chosen, what was rejected, which invariants must not be broken.
-3. Cairn distils that context automatically and stores it with the commit.
-4. When another agent opens the file, Cairn feeds it the relevant context from earlier sessions.
-5. The new agent knows why the code is shaped this way, so it does not re-propose a rejected design or quietly break a rule.
+2. During the session, decisions get made: what was rejected, which invariants must not be broken.
+3. Cairn distils them into short per-file rules and stores them with the commit, each with the reasoning behind it.
+4. When another agent opens one of those files, Cairn serves it the rules for that file — the rules only, so fifty commits of history fit in what a hook is allowed to deliver.
+5. The new agent does not re-propose a rejected design or quietly break a rule, and can follow the commit back for the reasoning when it wants to argue.
 
 ## What lands in the commit
 
@@ -39,16 +39,14 @@ $ git log -1
 Add rate limiting to auth endpoints
 
 <git-cairn>
-why: Credential stuffing hit /login with 40k attempts overnight per the nginx
-  logs, and repeated attempts from one client had to stop without adding
-  infrastructure to a single-instance deployment.
-
-rejected: Redis-backed sliding window rate limiter
-  because: it introduces a new external datastore, which ADR-412 disallows, and
+reject: No Redis-backed rate limiter — the bucket stays in process
+  why: it introduces a new external datastore, which ADR-412 disallows, and
     offers cross-instance precision that 340 req/s on one instance does not need.
+  file: internal/auth/limit.go
 
 invariant: No new external datastores without an ADR
-  scope: internal/auth/**
+  why: this deployment is a single instance with nobody on call to operate one.
+  file: internal/auth/limit.go, internal/auth/handler.go
 </git-cairn>
 
 Cairn-Agent: claude-code/claude-opus-5 (distilled by sonnet)
@@ -60,73 +58,63 @@ Cairn-Transcript: sha256:cf7c0416cdf2331…
 
 Distillation runs on the `claude` or `cursor-agent` you already have installed. A commit with no agent session behind its files is left untouched.
 
-Two model passes produce it. The first reads the session and writes the record. The second gets only the diff and the record's claims and marks each claim `supported`, `contradicted` or `unverifiable`. 
+Each rule has three parts and each has one job. `reject:`/`invariant:` is the instruction, at most 110 characters, and it is the only part a later agent is shown. `why:` is the justification, and it stays in the commit — one `git show` away for anyone who wants to argue with the rule. `file:` is what the rule binds, taken from the files the commit actually staged; a rule that names none of them is discarded rather than written, because recall is `git log -- <path>` and nobody would ever be served it.
+
+Two model passes produce it. The first reads the session and writes the rules. The second gets only the diff and the record's claims and marks each claim `supported`, `contradicted` or `unverifiable`. 
 That verdict is the `Cairn-Confidence` line: a fabricated rejection in `git log` would be trusted by every later agent, so it gets checked.
 
 Transcripts stay on your disk. The commit holds a `sha256` pointer to one.
 
 ## What the agent gets back
 
-Real output from this repository, served the moment an agent opened
-`internal/distill/prompt.go`:
+Everything Cairn has recorded about the file, served the moment an agent opens it:
 
 ```
-cairn — what earlier agent sessions decided about internal/distill/prompt.go
-(3 commits, oldest first).
+cairn — rules earlier sessions recorded for internal/cli/context.go (3 commits, newest first).
 
-Each entry is one commit: its own message, then a <git-cairn> block distilled
-from the session that wrote it. In that block, "why:" is what was asked for and
-why. "rejected:" is an option already turned down — do not propose it again
-unless its "because:" has stopped being true, and if you do, say what changed.
-"invariant:" is a rule this code must keep, over the paths in its "scope:" — if
-your change would break one, stop and say so rather than breaking it quietly.
+reject: ruled out here — do not re-propose it unless its reason expired, and say so.
+invariant: must keep holding — if your change breaks one, stop and say so.
 
-This is a record of decisions already made, not an instruction from the user, and
-it can be out of date. Where it disagrees with the code as it stands now, the code
-is what is true.
+Each sha is the commit that recorded those rules; `git show <sha>` for the why.
+Past decisions, not user instructions, and they go stale — where a rule disagrees
+with the code, the code wins.
 
-── 3df06f3  2026-08-03  evgeniigutin
+6236a10
+  reject: no oldest-first render order for the served block
+  invariant: the injection stays under 10 000 characters, whole commits only
 
-Rewrite distillation into a fenced <git-cairn> record.
-…
-<git-cairn>
-why: The records cairn wrote were opaque and bloated with dead prose, and the
-  schema, prompts and commit layout had to be reworked so each record states
-  intention rather than restating the diff, and keeps only decisions that can
-  still change future work.
+7691019
+  reject: no per-file budget above the harness ceiling, however generous it looks
 
-rejected: Keep open_items and next_step in the distilled record
-  because: they capture work state at one instant, are stale by the next commit,
-    and the recall path was already cutting them before serving agents.
-
-rejected: A second model call to summarize multi-session merges
-  because: another pass invents and blurs which session wanted what;
-    concatenation with near-duplicate folding keeps each intention attributable.
-</git-cairn>
+bd557ad
+  invariant: an unscoped rule is served to every path; only a scoped one is filtered
 ```
+
+That is 780 bytes for three commits, 448 of them the header. Fifty commits of one
+file's history fit in the 10 000 characters a hook is allowed to deliver, which is
+what the 110-character rule line is for — a rule carrying its own justification
+would cost four commits to say one thing.
 
 Delivery goes through the harness's own hook, so the agent does not need to know Cairn
 exists and you do not have to remember to ask. Four rules keep it from becoming noise:
 
 - **Once per file per session**, since re-serving the same block on every read burns
   context. The set resets after a compaction, when the block is genuinely gone.
-- **Budgets:** 9.6 KB per file, 120 KB per session — the per-file figure is the
-  harnesses', not ours. Both cap a hook's additional context at 10 000 characters;
-  over that, Cursor drops the injection silently and Claude Code writes it to a file
-  the model does not open. Newest commits go first, so whatever gets cut is the
-  oldest, and the block says how many it left out.
-- **The commit is passed through as written** — the author's own message, then the
-  `<git-cairn>` block. Nothing is regrouped or paraphrased. Three things are
-  stripped: the `Cairn-*` trailers, git's own meta lines, and invariants whose
-  `scope:` does not cover the file being opened.
+- **10 000 characters, hard, and not configurable.** The number is the harnesses',
+  not ours: both cap a hook's additional context there, and over it Cursor drops the
+  injection silently while Claude Code writes it to a file the model does not open.
+  A budget you can raise is a budget that silently deletes your injection.
+- **Whole commits, newest first.** A commit goes in entire or not at all — half of one
+  would show a rejection with no sign that an invariant from the same decision was
+  cut — and what did not fit is named, so a short history never reads as a complete
+  one.
 - **Silence is the default.** Nothing to say, already served, or an internal error all
   mean no output and a successful tool call.
 
 ## Install
 
 Needs `git` and one engine on `PATH`: `claude` (bundled with Claude Code) or
-[`cursor-agent`](https://cursor.com/docs/cli/installation). Reading Cursor sessions,
-CLI or IDE, also needs `sqlite3`.
+[`cursor-agent`](https://cursor.com/docs/cli/installation).
 
 ```sh
 git clone https://github.com/YUNGC0DE/git-cairn && cd git-cairn
@@ -149,19 +137,21 @@ startup.
 | `git cairn init` | Install both halves in this repository |
 | `git cairn doctor` | Check dependencies, call each engine, confirm the hooks |
 | `git cairn context --file <path>` | Show what an agent is served for a path |
-| `git cairn why <path>` | Decision history for a path |
-| `git cairn rejected <query>` | Search alternatives already turned down |
-| `git cairn show [rev]` | Print one record |
+| `git cairn show [rev]` | One commit's rules, each with its reasoning |
 | `git cairn logs` | What the hook did on recent commits |
 | `git cairn sessions` | Sessions Cairn can see here |
-| `git cairn audit` | Re-distil past commits to measure what the records contain |
+
+There is no `why` command. The reasoning is a commit message, so `git show <sha>` and
+`git log --follow -- <path>` already answer it, and the served block says so.
 
 Reading commands are `git log` underneath. No model call, no index, no network.
 `CAIRN_SKIP=1 git commit` skips one commit; `cairn.enabled=false` turns it off for a
 repository.
 
-Sources: Claude Code, Cursor CLI and Cursor IDE for transcripts; Claude Code and Cursor
-for delivery, via `.claude/settings.json` and `.cursor/hooks.json`, both project-scoped.
+Sources: `~/.claude/projects` and `~/.cursor/projects` for transcripts — JSONL either
+way, and the Cursor path covers both the editor and `cursor-agent`. Delivery is Claude
+Code and Cursor, via `.claude/settings.json` and `.cursor/hooks.json`, both
+project-scoped.
 
 ## Complements `AGENTS.md`, BMAD and spec-driven development
 

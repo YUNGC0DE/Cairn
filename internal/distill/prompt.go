@@ -19,64 +19,64 @@ import (
 
 const noTools = ` You have no tools and no filesystem access, and you need none: everything required is in the message. Never attempt a tool call — answer directly.`
 
-const extractSystem = `You read one agent coding session and the staged git diff it produced, and you write the record that is committed alongside that diff. Later agents are shown this record when they open the files it touched, so a sentence that is vague, invented, or merely restates the diff costs them context and teaches them something false. You emit exactly one raw JSON object and nothing else: no prose, no markdown fences, no commentary.` + noTools
+const extractSystem = `You read one agent coding session and the staged git diff it produced, and you write the rules that are committed alongside that diff. Later agents are shown those rules the moment they open one of the files they bind, so a sentence that is vague, invented, or merely restates the diff costs them context and teaches them something false. You emit exactly one raw JSON object and nothing else: no prose, no markdown fences, no commentary.` + noTools
 
 // The section order is deliberate: the requests come first because they are what
-// the record has to explain, and the diff comes last because it is the largest
-// and the least ambiguous — nothing after it can be misread as instructions.
-const extractInstructions = `Emit one JSON object with exactly these four keys:
+// the rules have to be grounded in, and the diff comes last because it is the
+// largest and the least ambiguous — nothing after it can be misread as
+// instructions.
+const extractInstructions = `Emit one JSON object with exactly these three keys:
 
 {
-  "why": "",
-  "rejected":   [{"option": "", "because": ""}],
-  "invariants": [{"rule": "", "scope": []}],
+  "rejected":   [{"rule": "", "why": "", "files": [""]}],
+  "invariants": [{"rule": "", "why": "", "files": [""]}],
   "claims":     [""]
 }
 
 You are given, in this order: <human-requests> (everything the human typed,
-verbatim, oldest first), <agent-session> (what the agent thought, said and ran;
-may be truncated), and <staged-diff> (the change being committed).
+verbatim, oldest first), <staged-files> (the paths this commit changes),
+<agent-session> (what the agent thought, said and ran; may be truncated), and
+<staged-diff> (the change being committed).
 
-One test decides every entry below: would a competent agent, six months from now,
-work differently for having read it? If not, leave the field out. Empty fields
-are the normal result and cost nothing; a filled one that changes nobody's
-behaviour costs every future reader the context it occupies.
+This record is not a summary of the commit. Nobody needs one: the reader has the
+diff and the commit message. It is a set of rules about specific files, written
+so the next agent that opens one of those files does not undo a decision already
+made. Everything that is not such a rule is left out.
 
-── why ────────────────────────────────────────────────────────────────────────
+One test decides every entry: would a competent agent, six months from now, work
+differently for having read it? If not, leave it out. Empty lists are the normal
+result and cost nothing; an entry that changes nobody's behaviour costs every
+future reader the context it occupies.
 
-Two to four sentences answering one question: what did the human want, and why
-did they want it?
+── the shape of one entry ─────────────────────────────────────────────────────
 
-Its source is <human-requests> — those are the author's own words. A reason is
-usually stated once, in passing, in an early request; carry it over even when
-the later requests are pure mechanics. When several topics were discussed, answer
-for the work that is in <staged-diff> and ignore the rest: blending unrelated
-requests into one purpose produces a sentence that is true of nothing.
+"rule"  — the instruction itself, at most 110 characters, imperative, and with
+          NO justification in it. This is the only part a later agent is shown
+          on opening the file, and the space is hard-limited: fifty commits of a
+          file's history have to fit in 10 000 characters. Write the sentence
+          you would want shouted at someone about to make the mistake.
+"why"   — one or two sentences, at most 300 characters, saying what makes the
+          rule true: the constraint, the measurement, the rule it would break.
+          This stays in the commit and is read only by someone who went looking.
+"files" — the repo-relative paths from <staged-files> the rule binds, at most
+          three. Copy them exactly as they appear there.
 
-When the session walked through several bugs or iterations on the way to one
-ask, write that ask once. Do not give each bug its own paragraph — "images were
-gone", then "centering broke", then "images still left-aligned" is a changelog
-of the session, not the human's intention.
+  Bad rule — carries its own reasoning: "Do not add a Redis rate limiter,
+  because ADR-412 forbids new datastores and one instance at 340 req/s does not
+  need cross-instance precision."
+  Good: rule "No Redis-backed rate limiter here — keep the bucket in process",
+        why  "ADR-412 disallows new external datastores, and a single instance
+              at 340 req/s does not need cross-instance precision."
 
-The last sentence may say what was actually built, and only if the diff would
-not make it obvious. Never write a changelog — the reader has the diff open.
-
-If the requests give no reason at all, say in one sentence what the change
-accomplishes and stop. A short "why" is a good "why"; padding is not neutral,
-it displaces the reader's own work.
-
-  Bad — restates the diff: "Adds a token-bucket rate limiter to the auth
-  handlers, wires it into the middleware, and adds tests."
-  Bad — the same point three times: "The budget must be per session. Each
-  session should get its own allowance. Sessions must not share one budget."
-  Good: "Credential stuffing hit /login with 40k attempts overnight, and the
-  author wanted repeated attempts from one client stopped without adding
-  infrastructure to the deployment."
+"files" is what decides who is ever shown the rule: a later agent is served an
+entry only when the file it opened is one of these. A rule bound to no file, or
+to a file outside <staged-files>, reaches nobody and is discarded — so name the
+file the rule is actually about, and if it binds two or three of them, name
+those. Never write a glob, a directory, or a path that is not in <staged-files>.
 
 ── rejected ───────────────────────────────────────────────────────────────────
 
-Alternatives that were on the table in this session and were turned down, each
-with the reason it lost.
+Alternatives that were on the table in this session and were turned down.
 
 Include one only if ALL of these hold:
   1. Someone actually raised it — the human or the agent — and then dropped it.
@@ -92,7 +92,7 @@ Exclude, and this covers most of what a session will offer you:
     here. Silence is not deliberation.
   - Ordering and scheduling: "do X first", "leave Y for later". That is a plan,
     not a rejected design, and it is stale within a week.
-  - A reason that is only a preference — "the author chose otherwise", "not
+  - A "why" that is only a preference — "the author chose otherwise", "not
     selected", "deferred". If you cannot name what makes the option wrong,
     worse, or unavailable, drop the entry entirely.
   - A command that failed and was then retried or corrected. A typo is not a
@@ -100,15 +100,12 @@ Exclude, and this covers most of what a session will offer you:
   - Not making the change at all. The status quo is never a rejected option.
 
 At most three. Zero is the normal answer and the correct one for most commits.
-Each "because" must name what disqualified the option: a constraint, a rule, a
-measurement, an assumption that turned out false. An invented rejection is far
-worse than an empty list — every agent that later opens this file will treat it
-as a decision already made.
+An invented rejection is far worse than an empty list — every agent that later
+opens that file will treat it as a decision already made.
 
 ── invariants ─────────────────────────────────────────────────────────────────
 
-Rules that must hold for FUTURE work in this repository and that this session
-established or confirmed.
+Properties the named files must keep, that this session established or confirmed.
 
 Include one only if ALL of these hold:
   1. It reads as a property, not an event. "A hook failure must never block a
@@ -116,11 +113,11 @@ Include one only if ALL of these hold:
   2. Breaking it would do real damage — a bug, a security hole, data loss, a
      rejected review — and someone could break it without noticing. That is
      what makes it worth carrying; a rule nobody can violate teaches nothing.
-  3. It binds a real part of this codebase — neither one line nobody will touch
-     again, nor something true of every repository in the world. A rule about a
-     subsystem, a boundary, a file format or a contract between components is
-     the right size; "this variable stays lowercase" and "write clean code" are
-     the two ways of being useless.
+  3. It binds code in <staged-files> — neither one line nobody will touch again,
+     nor something true of every repository in the world. A rule about a
+     function's contract, a file format, a boundary between components is the
+     right size; "this variable stays lowercase" and "write clean code" are the
+     two ways of being useless.
 
 Exclude:
   - A restatement of what this commit did. The diff already says it.
@@ -134,20 +131,12 @@ Exclude:
 
 At most two, and zero is the normal answer.
 
-"scope" is the path globs the rule constrains, e.g. ["internal/auth/**"], and it
-decides who is ever shown the rule: a later agent is served an invariant only
-when the file it opened falls inside the scope, while an unscoped rule is shown
-to every reader of this commit. Both mistakes cost something. Too narrow and the
-rule never reaches the code it binds; absent and it interrupts everyone. Name the
-paths the rule is actually about, and leave the scope empty only when it truly
-binds the whole repository.
-
 ── claims ─────────────────────────────────────────────────────────────────────
 
 Zero to four statements about <staged-diff> that someone holding only the diff
 could check and could prove false. They exist so a second pass can catch a
-record that reads well and is not true, so state the load-bearing parts of
-"why" and "because" — not decoration.
+record that reads well and is not true, so state the load-bearing parts of the
+rules and their "why" — not decoration.
 
 One fact per claim. A claim joined by "and" is checked as a whole, so a reader
 who can confirm the first half and not the second must call the whole thing
@@ -169,8 +158,8 @@ contradict you.
 
 Write for a developer reading ` + "`git log`" + ` two years from now. No first person. Never
 mention Cairn, this record, transcripts, sessions, agents, or that a tool wrote
-any of it. Return "" or [] for anything the session does not support — an empty
-field is a finding, not a failure.`
+any of it. Return [] for anything the session does not support — an empty list
+is a finding, not a failure.`
 
 // extractPrompt assembles the extraction request.
 //
@@ -194,6 +183,17 @@ func extractPrompt(requests, sessionText string, in Input) string {
 		b.WriteString("\n\n<human-requests>\n")
 		b.WriteString(fence(r, "human-requests"))
 		b.WriteString("\n</human-requests>")
+	}
+	// The staged paths get their own section rather than being left for the model
+	// to read off the diff headers. Every rule has to name one of them exactly, and
+	// a path recovered from a hunk header is a path the model may retype wrong —
+	// which costs the rule, since one it cannot be bound to is discarded.
+	if len(in.Files) > 0 {
+		b.WriteString("\n\n<staged-files>\n")
+		for _, f := range in.Files {
+			b.WriteString(fence(f, "staged-files") + "\n")
+		}
+		b.WriteString("</staged-files>")
 	}
 	b.WriteString("\n\n<agent-session>\n")
 	if s := strings.TrimSpace(sessionText); s != "" {

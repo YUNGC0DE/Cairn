@@ -13,14 +13,15 @@ func sampleResult() *distill.Result {
 	return &distill.Result{
 		Confidence: distill.Verified,
 		Extraction: &distill.Extraction{
-			Why: []string{"Credential stuffing hit /login and /token, and the author wanted repeated attempts from one client stopped without adding infrastructure."},
-			Rejected: []distill.Rejected{{
-				Option:  "Redis-backed sliding window",
-				Because: "introduces an external datastore ruled out in #412",
+			Rejected: []distill.Rule{{
+				Rule:  "No Redis-backed sliding window here — keep the bucket in process",
+				Why:   "introduces an external datastore ruled out in #412",
+				Files: []string{"internal/auth/limit.go"},
 			}},
-			Invariants: []distill.Invariant{{
+			Invariants: []distill.Rule{{
 				Rule:  "No new external datastores without an ADR",
-				Scope: []string{"internal/**"},
+				Why:   "#412 makes the deployment single-instance with nobody to operate one",
+				Files: []string{"internal/auth/limit.go", "internal/auth/handler.go"},
 			}},
 			Claims: []string{"State is kept in memory"},
 		},
@@ -71,23 +72,26 @@ func TestComposeThenParseRoundTrip(t *testing.T) {
 	if rec.Subject != "Add rate limiting to auth endpoints" {
 		t.Errorf("subject = %q", rec.Subject)
 	}
-	if len(rec.Why) != 1 || !strings.Contains(rec.Why[0], "credential stuffing") &&
-		!strings.Contains(rec.Why[0], "Credential stuffing") {
-		t.Errorf("why = %q", rec.Why)
+	if len(rec.Rejected) != 1 || !strings.Contains(rec.Rejected[0].Rule, "Redis-backed sliding window") {
+		t.Fatalf("rejected = %#v", rec.Rejected)
 	}
-	if len(rec.Rejected) != 1 || !strings.Contains(rec.Rejected[0], "Redis-backed sliding window") {
-		t.Errorf("rejected = %v", rec.Rejected)
+	// The three parts stay apart. The rule is what an agent is shown on a file
+	// touch, so a "why" folded into it would blow the character budget it exists
+	// to respect, and files that did not survive make the entry undeliverable.
+	if strings.Contains(rec.Rejected[0].Rule, "#412") {
+		t.Errorf("the reason leaked into the rule: %q", rec.Rejected[0].Rule)
 	}
-	// The reason travels with the option: without it a rejection reads as a bare
-	// prohibition and gets re-opened by the first agent that disagrees.
-	if !strings.Contains(rec.Rejected[0], "#412") {
-		t.Errorf("the reason was dropped from the rejection: %q", rec.Rejected[0])
+	if !strings.Contains(rec.Rejected[0].Why, "#412") {
+		t.Errorf("why = %q", rec.Rejected[0].Why)
 	}
-	if len(rec.Invariants) != 1 || !strings.Contains(rec.Invariants[0], "ADR") {
-		t.Errorf("invariants = %v", rec.Invariants)
+	if got := rec.Rejected[0].Files; len(got) != 1 || got[0] != "internal/auth/limit.go" {
+		t.Errorf("files = %v", got)
 	}
-	if !strings.Contains(rec.Invariants[0], "internal/**") {
-		t.Errorf("the scope was dropped from the invariant: %q", rec.Invariants[0])
+	if len(rec.Invariants) != 1 || !strings.Contains(rec.Invariants[0].Rule, "ADR") {
+		t.Fatalf("invariants = %#v", rec.Invariants)
+	}
+	if len(rec.Invariants[0].Files) != 2 {
+		t.Errorf("an invariant binding two files kept %v", rec.Invariants[0].Files)
 	}
 	if rec.Confidence != string(distill.Verified) {
 		t.Errorf("confidence = %q", rec.Confidence)
@@ -95,17 +99,42 @@ func TestComposeThenParseRoundTrip(t *testing.T) {
 	if len(rec.Files) != 2 {
 		t.Errorf("files = %v", rec.Files)
 	}
-	// Nothing outside the block belongs to the record.
-	for _, w := range rec.Why {
-		if strings.Contains(w, "Cairn-") {
-			t.Errorf("trailers leaked into why: %q", w)
-		}
+}
+
+// Which rules reach a reader is decided by the file it opened, and by nothing
+// else. Before this, delivery was decided by which commits touched the file, so
+// every rule in a commit was served to whoever opened any file it changed.
+func TestRulesAreServedOnlyToTheFilesTheyBind(t *testing.T) {
+	rec := &Record{
+		Rejected: []Entry{
+			{Rule: "no redis", Files: []string{"internal/auth/limit.go"}},
+			{Rule: "no cron", Files: []string{"internal/jobs/run.go"}},
+		},
+		Invariants: []Entry{
+			{Rule: "hooks never fail a commit", Files: []string{"internal/auth/limit.go"}},
+			{Rule: "an unbound rule", Files: nil},
+		},
+	}
+	rejected, invariants := rec.Rules("internal/auth/limit.go")
+	if len(rejected) != 1 || rejected[0].Rule != "no redis" {
+		t.Errorf("rejected = %#v", rejected)
+	}
+	if len(invariants) != 1 || invariants[0].Rule != "hooks never fail a commit" {
+		t.Errorf("a rule binding no file must reach nobody: %#v", invariants)
+	}
+	if r, i := rec.Rules("README.md"); len(r)+len(i) != 0 {
+		t.Errorf("an unrelated file was served %d rejected and %d invariants", len(r), len(i))
+	}
+	// A file that moved keeps its rules: the caller only asks this of commits
+	// `git log --follow` already attributed to this one file.
+	if r, _ := rec.Rules("internal/ratelimit/limit.go"); len(r) != 1 {
+		t.Errorf("a moved file lost its rules: %#v", r)
 	}
 }
 
 // The block's delimiters are what keep the record and git's trailers from being
-// the same kind of line. Before them a short "Invariant: …" was trailer-shaped
-// and git folded it into the trailer block.
+// the same kind of line. Without them a short "invariant: …" is trailer-shaped
+// and git folds it into the trailer block.
 func TestRecordIsFencedByItsOwnTags(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	msg, err := Compose(repo.Root, "Subject", Body(sampleResult()), sampleMeta())
@@ -156,8 +185,8 @@ func TestComposeWithoutProseStillWritesTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This is the timeout degradation: no prose, but the pointer
-	// to the transcript and the file list survive.
+	// This is the timeout degradation: no rules, but the pointer to the
+	// transcript and the file list survive.
 	if !strings.Contains(msg, TrailerTranscript+": sha256:9f2a1c") {
 		t.Errorf("metadata-only record lost its transcript pointer:\n%s", msg)
 	}
@@ -170,44 +199,18 @@ func TestComposeWithoutProseStillWritesTrailers(t *testing.T) {
 	}
 }
 
-func TestDisputedClaimIsNamedNotHidden(t *testing.T) {
-	res := sampleResult()
-	res.Confidence = distill.Disputed
-	res.Verification = &distill.Verification{Claims: []distill.ClaimVerdict{{
-		Index: 0, Status: distill.Contradicted, Claim: "State is kept in memory", Note: "diff imports redis",
-	}}}
-	body := Body(res)
-	if !strings.Contains(body, unconfirmedKey) {
-		t.Errorf("a contradicted claim must appear in the open:\n%s", body)
-	}
-
+func TestDisputedClaimRoundTrips(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	meta := sampleMeta()
 	meta.Confidence = distill.Disputed
 	meta.Disputed = []string{"State is kept in memory"}
-	msg, err := Compose(repo.Root, "Subject", body, meta)
+	msg, err := Compose(repo.Root, "Subject", Body(sampleResult()), meta)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := commitWith(t, repo, msg)
 	if len(rec.Disputed) != 1 {
 		t.Errorf("the contradicted claim did not round-trip: %+v", rec.Disputed)
-	}
-}
-
-func TestBodyCapsRejectedList(t *testing.T) {
-	res := sampleResult()
-	for i := 0; i < maxRejectedRendered+5; i++ {
-		res.Extraction.Rejected = append(res.Extraction.Rejected, distill.Rejected{
-			Option: "option", Because: "reason",
-		})
-	}
-	body := Body(res)
-	if n := strings.Count(body, rejectedKey); n > maxRejectedRendered+1 {
-		t.Errorf("rendered %d rejected lines, cap is %d", n, maxRejectedRendered)
-	}
-	if !strings.Contains(body, "more not recorded") {
-		t.Error("truncation must be visible, not silent")
 	}
 }
 
@@ -232,26 +235,32 @@ func TestWrapKeepsLinesWithinGitWidth(t *testing.T) {
 	}
 }
 
-// Wrapped entries are the common case, and the indent is the whole grammar: a
+// A wrapped "why" is the common case, and the indent is the whole grammar: a
 // continuation line must never be readable as a new field or as a git trailer.
 func TestParseReassemblesWrappedEntries(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	res := &distill.Result{
 		Confidence: distill.Verified,
 		Extraction: &distill.Extraction{
-			Why: []string{"Credential-stuffing traffic hit /login overnight, so the author wanted the endpoints limited before the next attempt wave."},
-			Rejected: []distill.Rejected{{
-				Option:  "Redis-backed sliding window rate limiter",
-				Because: "would introduce a new external datastore, which ADR-412 disallows, and is unnecessary precision for a single instance at 340 requests per second",
+			Rejected: []distill.Rule{{
+				Rule:  "No Redis-backed sliding window limiter — the bucket stays in process",
+				Why:   "it would introduce a new external datastore, which ADR-412 disallows, and is unnecessary precision for a single instance at 340 requests per second",
+				Files: []string{"internal/auth/limit.go"},
 			}},
-			Invariants: []distill.Invariant{{
-				Rule:  "No new external datastores such as Redis, Memcached or DynamoDB without an accepted ADR",
-				Scope: []string{"internal/auth/**"},
+			Invariants: []distill.Rule{{
+				Rule:  "No new datastore — Redis, Memcached, DynamoDB — without an accepted ADR",
+				Why:   "every one of them has to be operated, and this deployment has nobody to operate it",
+				Files: []string{"internal/auth/handler.go"},
 			}},
 		},
 	}
 	body := Body(res)
 	for _, line := range strings.Split(body, "\n") {
+		// The file line is the one that never wraps, since a wrapped path list
+		// cannot be read back unambiguously.
+		if strings.Contains(line, fileKey) {
+			continue
+		}
 		if len(line) > wrapAt {
 			t.Fatalf("line of %d chars exceeds %d: %q", len(line), wrapAt, line)
 		}
@@ -265,91 +274,43 @@ func TestParseReassemblesWrappedEntries(t *testing.T) {
 	if len(rec.Rejected) != 1 {
 		t.Fatalf("Rejected = %#v, want one reassembled entry", rec.Rejected)
 	}
-	if !strings.Contains(rec.Rejected[0], "unnecessary precision") {
-		t.Errorf("the tail of the rejection was lost: %q", rec.Rejected[0])
-	}
-	if len(rec.Invariants) != 1 || !strings.Contains(rec.Invariants[0], "accepted ADR") {
-		t.Errorf("Invariants = %#v", rec.Invariants)
-	}
-	if len(rec.Why) != 1 {
-		t.Fatalf("Why = %#v, want one entry", rec.Why)
+	if !strings.Contains(rec.Rejected[0].Why, "unnecessary precision") {
+		t.Errorf("the tail of the reason was lost: %q", rec.Rejected[0].Why)
 	}
 	// A continuation must not bleed into the field above or below it.
-	for _, leak := range []string{"unnecessary precision", "accepted ADR", "DynamoDB"} {
-		if strings.Contains(rec.Why[0], leak) {
-			t.Errorf("why absorbed a continuation line (%q): %q", leak, rec.Why[0])
-		}
+	if strings.Contains(rec.Rejected[0].Rule, "external datastore") {
+		t.Errorf("the rule absorbed its own why: %q", rec.Rejected[0].Rule)
 	}
-	if !strings.Contains(rec.Why[0], "Credential-stuffing") {
-		t.Errorf("why lost: %q", rec.Why[0])
+	if len(rec.Rejected[0].Files) != 1 {
+		t.Errorf("files = %v", rec.Rejected[0].Files)
 	}
-	if !strings.Contains(rec.Why[0], "attempt wave") {
-		t.Errorf("a wrapped why lost its tail: %q", rec.Why[0])
+	if len(rec.Invariants) != 1 || !strings.Contains(rec.Invariants[0].Rule, "accepted ADR") {
+		t.Fatalf("Invariants = %#v", rec.Invariants)
+	}
+	if strings.Contains(rec.Invariants[0].Rule, "nobody to operate") {
+		t.Errorf("the invariant absorbed its own why: %q", rec.Invariants[0].Rule)
 	}
 }
 
-// Several sessions behind one commit each state their own purpose, and each stays
-// its own entry: two sessions that wanted different things did not want one
-// blended thing.
-func TestMultipleWhyEntriesRoundTrip(t *testing.T) {
+// Several rules of the same kind stay separate entries: two decisions folded
+// into one line are a decision lost.
+func TestSeveralRulesOfOneKindRoundTrip(t *testing.T) {
 	repo := testutil.NewRepo(t)
 	res := sampleResult()
-	res.Extraction.Why = []string{
-		"The author wanted credential stuffing on /login stopped without new infrastructure.",
-		"A later session wanted the limiter's counters exposed so the on-call could see them.",
-	}
+	res.Extraction.Rejected = append(res.Extraction.Rejected, distill.Rule{
+		Rule:  "No per-request database lookup for the limit",
+		Why:   "the limit is static and the lookup doubled p99 in the staging run",
+		Files: []string{"internal/auth/limit.go"},
+	})
 	msg, err := Compose(repo.Root, "Add rate limiting", Body(res), sampleMeta())
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := commitWith(t, repo, msg)
-	if len(rec.Why) != 2 {
-		t.Fatalf("Why = %#v, want both intentions", rec.Why)
+	if len(rec.Rejected) != 2 {
+		t.Fatalf("Rejected = %#v, want both", rec.Rejected)
 	}
-	if !strings.Contains(rec.Why[1], "on-call") {
-		t.Errorf("the second intention was mangled: %q", rec.Why[1])
-	}
-}
-
-// Records written before the <git-cairn> block are the reason the tool exists in
-// the repositories that already use it. They must keep reading, and the fields
-// that were cut must be dropped rather than dumped into the prose.
-func TestLegacyRecordsStillParse(t *testing.T) {
-	repo := testutil.NewRepo(t)
-	legacy := `Ship reactive path recall and wire it into harness init.
-
-Agents get file history on first touch via harness hooks.
-
-Rejected: Cursor beforeReadFile as the injection event — Its response
-cannot reach the model; only preToolUse can deliver additional_context.
-
-Invariant: Reactive hooks must never fail the agent tool call: on error or
-nothing to say, exit quietly with no output. (internal/cli/**)
-
-Open: A Cursor skill packaging the commit rule has not been written yet.
-Next: Run doctor to confirm both engines answer.
-
-Cairn-Agent: claude-code/opus-5
-Cairn-Confidence: partial
-`
-	rec := commitWith(t, repo, legacy)
-	if !rec.Has() {
-		t.Fatal("a legacy record stopped being recognised")
-	}
-	if len(rec.Rejected) != 1 || !strings.Contains(rec.Rejected[0], "additional_context") {
-		t.Errorf("legacy rejected = %#v", rec.Rejected)
-	}
-	if len(rec.Invariants) != 1 || !strings.Contains(rec.Invariants[0], "exit quietly") {
-		t.Errorf("legacy invariants = %#v", rec.Invariants)
-	}
-	if len(rec.Why) != 1 || !strings.Contains(rec.Why[0], "file history on first touch") {
-		t.Errorf("legacy prose = %#v", rec.Why)
-	}
-	// Open:/Next: are recognised only so they can be discarded — not re-read as
-	// part of the reasoning.
-	for _, gone := range []string{"Cursor skill", "Run doctor"} {
-		if strings.Contains(strings.Join(rec.Why, " "), gone) {
-			t.Errorf("a dropped field leaked into the prose: %q", rec.Why)
-		}
+	if !strings.Contains(rec.Rejected[1].Rule, "per-request database lookup") {
+		t.Errorf("the second rejection was mangled: %q", rec.Rejected[1].Rule)
 	}
 }

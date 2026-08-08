@@ -1,33 +1,12 @@
 package capture
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/YUNGC0DE/git-cairn/internal/transcript"
-	"github.com/YUNGC0DE/git-cairn/internal/transcript/cursoride"
 )
-
-// TestSharedStoreParsersComputeTheirOwnPointer guards the wiring rather than the
-// hashing: Cursor's IDE keeps every conversation in one multi-gigabyte file, and
-// the generic pointer would read all of it inside a commit hook.
-func TestSharedStoreParsersComputeTheirOwnPointer(t *testing.T) {
-	p := ParserByName(cursoride.Name)
-	if p == nil {
-		t.Fatal("cursor-ide is not registered")
-	}
-	if _, ok := p.(transcript.Pointerer); !ok {
-		t.Fatal("cursor-ide must compute its own transcript pointer")
-	}
-	// A ref naming a store that is not there must come back empty, not fall
-	// through to hashing whatever the path points at.
-	got := TranscriptPointer(transcript.Ref{
-		Agent: cursoride.Name, ID: "26369f10-2678-4c3c-a14f-b032df1df70e",
-		Path: t.TempDir() + "/state.vscdb",
-	})
-	if got != "" {
-		t.Errorf("pointer for a missing store = %q, want empty", got)
-	}
-}
 
 func TestParsersAreDistinct(t *testing.T) {
 	seen := map[string]bool{}
@@ -37,7 +16,25 @@ func TestParsersAreDistinct(t *testing.T) {
 		}
 		seen[p.Name()] = true
 	}
-	if len(seen) < 3 {
-		t.Errorf("want claude-code, cursor-cli and cursor-ide registered, got %v", seen)
+	if len(seen) < 2 {
+		t.Errorf("want claude-code and cursor registered, got %v", seen)
+	}
+}
+
+// The pointer is a hash of the transcript and never its contents: a commit that
+// carried the session text would put every secret an agent was shown into git
+// history, permanently and on every clone.
+func TestTranscriptPointerHashesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := TranscriptPointer(transcript.Ref{Agent: "cursor", ID: "s", Path: path})
+	if len(got) != len("sha256:")+64 {
+		t.Fatalf("pointer = %q, want a sha256", got)
+	}
+	if missing := TranscriptPointer(transcript.Ref{Path: filepath.Join(dir, "gone.jsonl")}); missing != "" {
+		t.Errorf("pointer for a missing transcript = %q, want empty", missing)
 	}
 }

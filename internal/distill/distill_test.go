@@ -64,9 +64,12 @@ func input() Input {
 }
 
 const goodExtraction = `{
-  "why": "Credential stuffing hit /login overnight, and the author wanted repeated attempts from one client stopped without adding infrastructure.",
-  "rejected": [{"option": "Redis-backed sliding window", "because": "introduces an external datastore ruled out in #412"}],
-  "invariants": [{"rule": "No new external datastores without an ADR", "scope": ["internal/**"]}],
+  "rejected": [{"rule": "No Redis-backed sliding window — the bucket stays in process",
+                "why": "introduces an external datastore ruled out in #412",
+                "files": ["internal/auth/limit.go"]}],
+  "invariants": [{"rule": "No new external datastores without an ADR",
+                  "why": "#412; the deployment is single-instance with nobody to operate one",
+                  "files": ["internal/auth/limit.go"]}],
   "claims": ["The limiter keeps state in memory, not Redis", "Peak traffic is 340 req/s"]
 }`
 
@@ -190,13 +193,15 @@ func TestBudgetExhaustionSkipsVerification(t *testing.T) {
 
 func TestSanitizeDropsJunk(t *testing.T) {
 	e := &scripted{replies: []string{`{
-	  "why": "  Why   with   loose  spacing ",
-	  "rejected": [{"option": "Redis", "because": ""}, {"option": "", "because": "too slow"},
-	               {"option": "Kafka", "because": "not chosen"},
-	               {"option": "Memcached", "because": "same datastore problem"}],
-	  "invariants": [{"rule": "", "scope": []},
-	                 {"rule": "Rate limiting was added to /login", "scope": ["internal/**"]},
-	                 {"rule": "Rule", "scope": ["*", "internal/**"]}],
+	  "rejected": [{"rule": "Redis", "why": "", "files": ["internal/auth/limit.go"]},
+	               {"rule": "", "why": "too slow", "files": ["internal/auth/limit.go"]},
+	               {"rule": "Kafka", "why": "not chosen", "files": ["internal/auth/limit.go"]},
+	               {"rule": "  Memcached   for the   counters ", "why": "same datastore problem",
+	                "files": ["/Users/x/repo/internal/auth/limit.go"]}],
+	  "invariants": [{"rule": "", "why": "x", "files": ["internal/auth/limit.go"]},
+	                 {"rule": "Rate limiting was added to /login", "why": "y", "files": ["internal/auth/limit.go"]},
+	                 {"rule": "Rule", "why": "a real reason", "files": ["docs/nothing-staged.md"]},
+	                 {"rule": "Second rule", "why": "another real reason", "files": ["limit.go"]}],
 	  "claims": ["ok", "  ", "none"]
 	}`}}
 	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
@@ -204,36 +209,42 @@ func TestSanitizeDropsJunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := res.Extraction
-	if len(ex.Why) != 1 || ex.Why[0] != "Why with loose spacing" {
-		t.Errorf("why = %q", ex.Why)
+	// Half a rule invites the exact re-litigation the record exists to stop, and
+	// "not chosen" is not a reason. The survivor also has its spacing collapsed
+	// and its absolute path bound back to the staged one.
+	if len(ex.Rejected) != 1 || ex.Rejected[0].Rule != "Memcached for the counters" {
+		t.Fatalf("rejected = %+v, want only the complete, reasoned entry", ex.Rejected)
 	}
-	// Half a rejection invites the exact re-litigation the field exists to stop,
-	// and "not chosen" is not a reason.
-	if len(ex.Rejected) != 1 || ex.Rejected[0].Option != "Memcached" {
-		t.Errorf("rejected = %+v, want only the complete, reasoned entry", ex.Rejected)
+	if got := ex.Rejected[0].Files; len(got) != 1 || got[0] != "internal/auth/limit.go" {
+		t.Errorf("files = %v, want the staged spelling of the path", got)
 	}
 	// "was added to /login" reports this commit; it constrains no future work.
-	if len(ex.Invariants) != 1 || ex.Invariants[0].Rule != "Rule" {
-		t.Errorf("invariants = %+v, want only the rule stated as a rule", ex.Invariants)
+	// A rule bound to a file this commit does not stage can never be served, so
+	// it is dropped rather than written. A bare base name still binds.
+	if len(ex.Invariants) != 1 || ex.Invariants[0].Rule != "Second rule" {
+		t.Fatalf("invariants = %+v", ex.Invariants)
 	}
-	if len(ex.Invariants[0].Scope) != 1 {
-		t.Errorf("scope = %q, want '*' dropped as carrying no information", ex.Invariants[0].Scope)
+	if got := ex.Invariants[0].Files; len(got) != 1 || got[0] != "internal/auth/limit.go" {
+		t.Errorf("files = %v", got)
 	}
 	if len(ex.Claims) != 1 || ex.Claims[0] != "ok" {
 		t.Errorf("claims = %+v", ex.Claims)
 	}
 }
 
-// A "why" that only repeats the subject line the reader already has one line
-// above is strictly worse than saying nothing.
-func TestWhyThatRestatesTheSubjectIsDropped(t *testing.T) {
-	e := &scripted{replies: []string{`{"why":"Add rate limiting to the auth endpoints.","rejected":[],"invariants":[],"claims":[]}`}}
+// A commit that stages exactly one file leaves no room for ambiguity, so a rule
+// that forgot to name it is bound rather than discarded.
+func TestSingleStagedFileIsAssumed(t *testing.T) {
+	e := &scripted{replies: []string{`{"rejected":[{"rule":"No Redis","why":"an external datastore #412 rules out","files":[]}],"invariants":[],"claims":[]}`}}
 	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Extraction.Why) != 0 {
-		t.Errorf("why = %q, want dropped as a restatement of %q", res.Extraction.Why, input().Subject)
+	if len(res.Extraction.Rejected) != 1 {
+		t.Fatalf("rejected = %+v", res.Extraction.Rejected)
+	}
+	if got := res.Extraction.Rejected[0].Files; len(got) != 1 || got[0] != "internal/auth/limit.go" {
+		t.Errorf("files = %v, want the only staged file", got)
 	}
 }
 
@@ -241,11 +252,13 @@ func TestWhyThatRestatesTheSubjectIsDropped(t *testing.T) {
 // ignores that ignores it by a wide margin, so the cap is enforced here too.
 func TestPerSessionCapsAreEnforced(t *testing.T) {
 	e := &scripted{replies: []string{`{
-	  "why": "x",
-	  "rejected": [{"option":"a","because":"reason one"},{"option":"b","because":"reason two"},
-	               {"option":"c","because":"reason three"},{"option":"d","because":"reason four"}],
-	  "invariants": [{"rule":"first rule that must hold"},{"rule":"second rule that must hold"},
-	                 {"rule":"third rule that must hold"}],
+	  "rejected": [{"rule":"alpha","why":"reason one","files":["internal/auth/limit.go"]},
+	               {"rule":"beta","why":"reason two","files":["internal/auth/limit.go"]},
+	               {"rule":"gamma","why":"reason three","files":["internal/auth/limit.go"]},
+	               {"rule":"delta","why":"reason four","files":["internal/auth/limit.go"]}],
+	  "invariants": [{"rule":"first rule that must hold","why":"reason one","files":["internal/auth/limit.go"]},
+	                 {"rule":"second rule that must hold","why":"reason two","files":["internal/auth/limit.go"]},
+	                 {"rule":"third rule that must hold","why":"reason three","files":["internal/auth/limit.go"]}],
 	  "claims": []
 	}`}}
 	res, err := Run(context.Background(), e, input(), Options{Budget: time.Minute, SkipVerify: true})
@@ -282,13 +295,13 @@ func TestVerdictsWithInventedIndexAreDropped(t *testing.T) {
 func TestDegradedSessionIsReported(t *testing.T) {
 	in := input()
 	in.Sessions[0].Degraded = true
-	in.Sessions[0].DegradedReason = "sqlite3 missing"
+	in.Sessions[0].DegradedReason = "transcript unreadable"
 	e := &scripted{replies: []string{goodExtraction}}
 	res, err := Run(context.Background(), e, in, Options{Budget: time.Minute, SkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(res.Notes, " "), "sqlite3 missing") {
+	if !strings.Contains(strings.Join(res.Notes, " "), "transcript unreadable") {
 		t.Errorf("a degraded read must be surfaced: %v", res.Notes)
 	}
 }

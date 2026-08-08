@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the build version, overridden at link time by goreleaser.
-var Version = "0.2.0"
+var Version = "0.3.0"
 
 // prog is the command name to print in help text.
 //
@@ -84,16 +84,10 @@ func commands() []command {
 			prog + " init [--force] [--mode message|notes] [--agent claude-code|cursor|all|none]", cmdInit},
 		{"hook", "run a git hook (invoked by git, not by hand)",
 			prog + " hook prepare-commit-msg <file> [source] [sha]", cmdHook},
-		{"context", "what an agent is told when it touches a path (what the hooks serve)",
+		{"context", "the rules an agent is served when it touches a path (what the hooks send)",
 			prog + " context --file <path> [--session <id>] [--reset] [--json]", cmdContext},
-		{"why", "show the records behind a path, and why it looks like this",
-			prog + " why <path>[:line] [-n N]", cmdWhy},
-		{"rejected", "search alternatives that were already turned down",
-			prog + " rejected <query> [-n N]", cmdRejected},
-		{"show", "show the record of one commit",
+		{"show", "show the rules one commit recorded, with the reasoning behind each",
 			prog + " show [<commit>]", cmdShow},
-		{"audit", "distil past commits to measure what the corpus actually contains",
-			prog + " audit [-n N] [--since <date>] [--jobs N] [--out file.json] [--no-verify]", cmdAudit},
 		{"sessions", "list agent sessions cairn can see for this repository",
 			prog + " sessions [--all]", cmdSessions},
 		{"doctor", "check every dependency, and call each engine to prove it answers",
@@ -136,8 +130,8 @@ func Run(args []string, out, errw io.Writer) error {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "git-cairn — distils why an agent session decided what it did into the commit,")
-	fmt.Fprintln(w, "            and serves it back when an agent next touches those files.")
+	fmt.Fprintln(w, "git-cairn — distils an agent session's decisions into per-file rules on the commit,")
+	fmt.Fprintln(w, "            and serves them back when an agent next touches those files.")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "usage: %s <command> [flags]\n", prog)
 	if prog == "cairn" {

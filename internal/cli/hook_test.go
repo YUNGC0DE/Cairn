@@ -41,9 +41,12 @@ func (s *scripted) Complete(_ context.Context, req llm.Request) (*llm.Response, 
 }
 
 const extractReply = `{
-  "why": "Credential stuffing was hitting /login, and the author wanted repeated attempts from one client stopped without adding a datastore.",
-  "rejected": [{"option": "Redis-backed sliding window", "because": "adds an external datastore ruled out in #412"}],
-  "invariants": [{"rule": "No new external datastores without an ADR", "scope": ["internal/**"]}],
+  "rejected": [{"rule": "No Redis-backed sliding window — the bucket stays in process",
+                "why": "adds an external datastore ruled out in #412",
+                "files": ["internal/auth/limit.go"]}],
+  "invariants": [{"rule": "No new external datastores without an ADR",
+                  "why": "#412; nobody operates one for this single-instance deployment",
+                  "files": ["internal/auth/limit.go"]}],
   "claims": ["The limiter keeps state in memory"]
 }`
 
@@ -186,11 +189,10 @@ func TestHookWritesRecordIntoCommitMessage(t *testing.T) {
 	for _, want := range []string{
 		record.OpenTag,
 		record.CloseTag,
-		"why: Credential stuffing",
-		"rejected: Redis-backed sliding window",
-		"because: adds an external datastore",
+		"reject: No Redis-backed sliding window",
+		"why: adds an external datastore",
 		"invariant: No new external datastores",
-		"scope: internal/**",
+		"file: internal/auth/limit.go",
 		record.TrailerAgent + ": claude-code/claude-opus-5",
 		record.TrailerConfidence + ": verified",
 		record.TrailerFiles + ": internal/auth/limit.go",
@@ -488,7 +490,7 @@ func TestNotesModeKeepsMessageCleanAndAttachesNote(t *testing.T) {
 	if note == "" {
 		t.Fatal("no note attached")
 	}
-	for _, want := range []string{"rejected: Redis-backed sliding window", record.TrailerConfidence + ": verified"} {
+	for _, want := range []string{"reject: No Redis-backed sliding window", record.TrailerConfidence + ": verified"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("note missing %q:\n%s", want, note)
 		}
@@ -500,7 +502,7 @@ func TestNotesModeKeepsMessageCleanAndAttachesNote(t *testing.T) {
 	if err := cmdShow(h.env, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Redis-backed sliding window") {
+	if !strings.Contains(out.String(), "No Redis-backed sliding window") {
 		t.Errorf("cairn show must read notes-mode records too:\n%s", out)
 	}
 }
@@ -539,7 +541,10 @@ func TestInitRefusesToClobberAForeignHook(t *testing.T) {
 	}
 }
 
-func TestWhyAndRejectedReadBackTheRecord(t *testing.T) {
+// `cairn show` is where the justification lives: the reactive channel serves the
+// rule alone, so a human — or an agent that followed the commit back — has to be
+// able to read why it was written.
+func TestShowReadsBackTheRuleAndItsReason(t *testing.T) {
 	h := newHarness(t, extractReply, verifyReply)
 	h.repo.Write("README.md", "x\n")
 	h.repo.Add(".")
@@ -554,27 +559,17 @@ func TestWhyAndRejectedReadBackTheRecord(t *testing.T) {
 
 	out := &bytes.Buffer{}
 	h.env.Out = out
-	if err := cmdWhy(h.env, []string{"internal/auth/limit.go"}); err != nil {
+	if err := cmdShow(h.env, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Credential stuffing") {
-		t.Errorf("cairn why lost the intent:\n%s", out)
-	}
-
-	out.Reset()
-	if err := cmdRejected(h.env, []string{"redis"}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(strings.ToLower(out.String()), "redis-backed sliding window") {
-		t.Errorf("cairn rejected did not find the negative:\n%s", out)
-	}
-
-	out.Reset()
-	if err := cmdRejected(h.env, []string{"kafka"}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.ToLower(out.String()), "redis") {
-		t.Errorf("query must actually filter:\n%s", out)
+	for _, want := range []string{
+		"No Redis-backed sliding window",
+		"#412",
+		"internal/auth/limit.go",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("cairn show is missing %q:\n%s", want, out)
+		}
 	}
 }
 

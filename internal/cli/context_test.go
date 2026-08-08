@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,17 +15,28 @@ import (
 // distillation half is not under test here.
 func recordedCommit(t *testing.T, r *testutil.Repo, path, content, subject string) {
 	t.Helper()
+	ruleCommit(t, r, path, content, subject,
+		`reject: no in-process LRU cache
+  why: it goes stale across workers and the staleness is invisible
+  file: `+path+`
+
+invariant: the cache key must include the tenant id
+  why: without it one tenant is served another's rendered page
+  file: `+path)
+}
+
+// ruleCommit writes a commit whose <git-cairn> block is exactly the given rules.
+func ruleCommit(t *testing.T, r *testutil.Repo, path, content, subject, rules string) {
+	t.Helper()
 	r.Write(path, content)
 	r.Add(path)
 	r.Commit(subject + `
 
-Cache the rendered page so the list endpoint stops recomputing it.
+A body the author wrote, which the reactive channel does not serve.
 
-Rejected: an in-process LRU cache — it goes stale across workers and the
-staleness is invisible.
-Invariant: the cache key must include the tenant id.
-Open: eviction on tenant deletion is not wired up.
-Next: wire eviction into the delete path.
+<git-cairn>
+` + rules + `
+</git-cairn>
 
 Cairn-Agent: claude-code/opus
 Cairn-Confidence: verified
@@ -41,7 +53,7 @@ func TestContextServesOncePerSessionPerFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(first, "in-process LRU cache") {
+	if !strings.Contains(first, "no in-process LRU cache") {
 		t.Fatalf("first touch did not recall the rejected alternative:\n%s", first)
 	}
 	if !strings.Contains(first, "tenant id") {
@@ -92,52 +104,102 @@ func TestContextResetAfterCompaction(t *testing.T) {
 	}
 }
 
-// Under a budget the newest commits are the ones kept — the agent is about to
-// edit the file as it stands.
-func TestContextBudgetKeepsNewest(t *testing.T) {
+// Only the rules travel, and only the short half of each. The author's prose,
+// the justification and the trailers stay in the commit: the injection has 10 000
+// characters for a file's whole history, and prose is what stops the fiftieth
+// commit from arriving.
+func TestContextServesRulesAndNothingElse(t *testing.T) {
 	r := testutil.NewRepo(t)
 	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
-	recordedCommit(t, r, "cache.go", "package cache // v2\n", "Key the cache by tenant")
 
-	full, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s0", Hooked: true})
+	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(full, "Add the page cache") || !strings.Contains(full, "Key the cache by tenant") {
-		t.Fatalf("both commits should be present unbudgeted:\n%s", full)
+	for _, unwanted := range []string{
+		"A body the author wrote", // the commit's own prose
+		"goes stale across",       // the rule's justification
+		"Cairn-Agent", "Cairn-Files", "<git-cairn>",
+	} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("%q reached the agent:\n%s", unwanted, out)
+		}
 	}
-	// Newest first, so that whatever a harness truncates off the tail is the
-	// least relevant end. A 12.1 kB injection reached an agent as a 2 kB preview,
-	// and printing oldest-first meant the preview held the oldest commits while
-	// the decision it was about to collide with was the part that got cut.
-	if strings.Index(full, "Key the cache by tenant") > strings.Index(full, "Add the page cache") {
-		t.Fatalf("history must read newest first:\n%s", full)
-	}
-
-	// Room for the newest commit but not for both.
-	tight := len(full) - 20
-	out, err := serveContext(r.Repo, serveRequest{
-		Path: "cache.go", Session: "s1", Budget: tight, Hooked: true,
-	})
+	// The commit is named, because that is where the reasoning was left.
+	head, err := r.Repo.Log([]string{"-n", "1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) > tight {
-		t.Fatalf("injection overran its budget: %d > %d bytes\n%s", len(out), tight, out)
+	if !strings.Contains(out, head[0].Short) {
+		t.Fatalf("the block does not say which commit to read:\n%s", out)
 	}
-	if !strings.Contains(out, "Key the cache by tenant") {
-		t.Fatalf("the newest commit should survive the squeeze:\n%s", out)
-	}
-	if strings.Contains(out, "Add the page cache") {
-		t.Fatalf("the oldest commit should have been dropped first:\n%s", out)
-	}
-	if !strings.Contains(out, "1 commit earlier, not shown here") {
-		t.Fatalf("what did not fit must be declared:\n%s", out)
+	if !strings.Contains(out, "git show") {
+		t.Fatalf("the block does not say how to reach the reasoning:\n%s", out)
 	}
 }
 
-// The block has to say what it is. Handed over bare, a "Rejected:" line reads
-// like a suggestion rather than a closed decision.
+// A rule reaches the file it names and no other. Delivery used to be decided by
+// which commits touched the file, so a rule about internal/auth was served to an
+// agent editing README.md whenever one commit had touched both.
+func TestContextServesOnlyRulesBoundToTheFile(t *testing.T) {
+	r := testutil.NewRepo(t)
+	r.Write("cache.go", "package cache\n")
+	r.Write("router.go", "package router\n")
+	r.Add(".")
+	r.Commit(`Add the cache and route to it
+
+<git-cairn>
+reject: no in-process LRU cache
+  why: it goes stale across workers
+  file: cache.go
+
+invariant: every route must be registered in one place
+  why: two registration sites silently shadowed each other
+  file: router.go
+</git-cairn>
+
+Cairn-Agent: claude-code/opus
+Cairn-Confidence: verified
+Cairn-Files: cache.go,router.go`)
+
+	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no in-process LRU cache") {
+		t.Fatalf("the file's own rule was not served:\n%s", out)
+	}
+	if strings.Contains(out, "registered in one place") {
+		t.Fatalf("a rule about another file in the same commit was served:\n%s", out)
+	}
+}
+
+// Newest first, so that whatever a harness truncates off the tail is the least
+// relevant end. A 12.1 kB injection reached an agent as a 2 kB preview, and
+// printing oldest-first meant the preview held the oldest commits while the
+// decision it was about to collide with was the part that got cut.
+func TestContextServesNewestFirst(t *testing.T) {
+	r := testutil.NewRepo(t)
+	ruleCommit(t, r, "cache.go", "package cache\n", "Add the page cache",
+		"reject: no in-process LRU cache\n  why: stale across workers\n  file: cache.go")
+	ruleCommit(t, r, "cache.go", "package cache // v2\n", "Key the cache by tenant",
+		"invariant: the cache key must include the tenant id\n  why: cross-tenant leak\n  file: cache.go")
+
+	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s0", Hooked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest, oldest := strings.Index(out, "tenant id"), strings.Index(out, "LRU cache")
+	if newest < 0 || oldest < 0 {
+		t.Fatalf("both commits should be served:\n%s", out)
+	}
+	if newest > oldest {
+		t.Fatalf("history must read newest first:\n%s", out)
+	}
+}
+
+// The block has to say what it is. Handed over bare, a "reject:" line reads like
+// a suggestion rather than a closed decision.
 func TestContextExplainsItselfToTheAgent(t *testing.T) {
 	r := testutil.NewRepo(t)
 	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
@@ -146,23 +208,44 @@ func TestContextExplainsItselfToTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Matched against the unwrapped text: the header is hard-wrapped, so a line
+	// break can land anywhere inside a sentence.
+	flat := strings.Join(strings.Fields(out), " ")
 	for _, want := range []string{
-		"do not propose it again", // what rejected means
-		"a rule this code must",   // what invariant means
-		"can be out of date",      // that memory is not authority
-		"the code is what is true",
+		"do not re-propose it",  // what reject means
+		"must keep holding",     // what invariant means
+		"git show <sha>",        // where the reasoning went
+		"not user instructions", // that this is not the user talking
+		"the code wins",         // that memory is not authority
 	} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(flat, want) {
 			t.Fatalf("the instructions are missing %q:\n%s", want, out)
 		}
 	}
 	// The explanation must come before what it explains.
-	if strings.Index(out, "Each entry is one commit") > strings.Index(out, "Rejected:") {
-		t.Fatalf("instructions must precede the history:\n%s", out)
+	if strings.Index(out, "newest first") > strings.Index(out, "reject: no in-process") {
+		t.Fatalf("instructions must precede the rules:\n%s", out)
+	}
+	// The header is charged against the same ceiling as the history it introduces,
+	// so it is capped rather than left to grow whenever a sentence looks helpful.
+	head, _, _ := strings.Cut(out, "\n\n"+headOf(t, r))
+	if len(head) > 600 {
+		t.Errorf("the header is %d bytes — that is three commits of history spent on preamble", len(head))
 	}
 }
 
 // A commit with no record carries nothing the diff does not already say.
+// headOf returns HEAD's short sha, which is where the header stops and the first
+// commit's rules begin.
+func headOf(t *testing.T, r *testutil.Repo) string {
+	t.Helper()
+	commits, err := r.Repo.Log([]string{"-n", "1"}, nil)
+	if err != nil || len(commits) == 0 {
+		t.Fatalf("log: %v", err)
+	}
+	return commits[0].Short
+}
+
 func TestContextSkipsCommitsWithoutARecord(t *testing.T) {
 	r := testutil.NewRepo(t)
 	r.Write("plain.go", "package plain\n")
@@ -191,6 +274,79 @@ func TestContextSilentOnUnknownFile(t *testing.T) {
 	}
 }
 
+// The whole design goal of the short rule line, stated as a test: fifty commits
+// of one file's history reach the agent inside the harness's ceiling.
+//
+// The ceiling is not a preference. Cursor's own bundle holds `Ydt = 1e4` and
+// drops anything longer; Claude Code spills it to a file with a ~2 kB preview
+// the model does not open. Either way an injection over the limit buys zero
+// delivered bytes, so what fits is what the format has to be designed around.
+func TestFiftyCommitsFitInOneInjection(t *testing.T) {
+	r := testutil.NewRepo(t)
+	const want = 50
+	for i := 0; i < want; i++ {
+		ruleCommit(t, r, "cache.go", fmt.Sprintf("package cache // v%d\n", i),
+			fmt.Sprintf("Change the cache, round %d", i),
+			fmt.Sprintf(
+				"reject: no in-process LRU cache for the tenant page, revision %d of this decision\n"+
+					"  why: it goes stale across workers and the staleness is invisible until a customer reports it\n"+
+					"  file: cache.go\n\n"+
+					"invariant: the cache key must include the tenant id, checked at write time, revision %d\n"+
+					"  why: without it one tenant is served another tenant's rendered page, which is a data leak\n"+
+					"  file: cache.go", i, i))
+	}
+	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > maxInjection {
+		t.Fatalf("injection is %d bytes, over the harness ceiling of %d", len(out), maxInjection)
+	}
+	if strings.Contains(out, "did not fit") {
+		t.Fatalf("%d commits of two rules each must fit in %d bytes; %d bytes were used:\n%s",
+			want, maxInjection, len(out), out[:400])
+	}
+	for _, i := range []int{0, want - 1} {
+		if !strings.Contains(out, fmt.Sprintf("revision %d of this decision", i)) {
+			t.Errorf("commit %d did not survive the packing", i)
+		}
+	}
+}
+
+// Past the ceiling, commits go whole or not at all: half a commit would show a
+// rejection with no sign that an invariant from the same decision was cut. What
+// did not fit is declared, because a truncated history that reads as complete is
+// worse than none.
+func TestContextDropsWholeCommitsAndSaysSo(t *testing.T) {
+	r := testutil.NewRepo(t)
+	filler := strings.Repeat("padding ", 12)
+	for i := 0; i < 120; i++ {
+		ruleCommit(t, r, "cache.go", fmt.Sprintf("package cache // v%d\n", i),
+			fmt.Sprintf("Change %d", i),
+			fmt.Sprintf("reject: rule %d %s\n  why: a reason\n  file: cache.go\n\n"+
+				"invariant: paired rule %d %s\n  why: a reason\n  file: cache.go", i, filler, i, filler))
+	}
+	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) > maxInjection {
+		t.Fatalf("injection is %d bytes, over the ceiling of %d", len(out), maxInjection)
+	}
+	if !strings.Contains(out, "did not fit") {
+		t.Fatalf("what was dropped must be declared:\n%s", out[len(out)-400:])
+	}
+	// Every commit that arrived arrived whole. Counted on the indented rule lines,
+	// so the header's own use of the words cannot be mistaken for an entry.
+	if a, b := strings.Count(out, "  reject: rule "), strings.Count(out, "  invariant: paired rule "); a != b {
+		t.Errorf("a commit was cut in half: %d rejections against %d invariants", a, b)
+	}
+	// The newest is what survived.
+	if !strings.Contains(out, "reject: rule 119") {
+		t.Errorf("the newest commit was dropped:\n%s", out[:300])
+	}
+}
+
 func TestPreToolUseHookSpeaksClaudeCodeJSON(t *testing.T) {
 	r := testutil.NewRepo(t)
 	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
@@ -216,8 +372,11 @@ func TestPreToolUseHookSpeaksClaudeCodeJSON(t *testing.T) {
 	if resp.HookSpecificOutput.HookEventName != "PreToolUse" {
 		t.Fatalf("wrong event name: %q", resp.HookSpecificOutput.HookEventName)
 	}
-	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "in-process LRU cache") {
+	if !strings.Contains(resp.HookSpecificOutput.AdditionalContext, "no in-process LRU cache") {
 		t.Fatalf("context did not reach the payload:\n%s", out.String())
+	}
+	if n := len(resp.HookSpecificOutput.AdditionalContext); n > maxInjection {
+		t.Fatalf("the payload is %d bytes, over what the harness will deliver", n)
 	}
 }
 
@@ -248,123 +407,5 @@ func TestPreToolUseHookSurvivesGarbage(t *testing.T) {
 		if err := cmdHook(env, []string{"pre-tool-use"}); err != nil {
 			t.Fatalf("input %q returned an error: %v", in, err)
 		}
-	}
-}
-
-// The commit message travels verbatim — every line of it, trailers and
-// co-authorship included. Deciding on the agent's behalf which parts of a commit
-// message are worth reading is exactly the judgement this channel must not make.
-func TestContextPassesCommitMessagesVerbatim(t *testing.T) {
-	r := testutil.NewRepo(t)
-	tail := "The endpoint had been recomputing the same page for every request, and " +
-		"profiling put ninety percent of the latency in that render, which is why " +
-		"the cache exists at all rather than a faster renderer."
-	r.Write("cache.go", "package cache\n")
-	r.Add("cache.go")
-	r.Commit(`Add the page cache
-
-Cache the rendered page so the list endpoint stops recomputing it.
-
-Co-authored-by: Someone <a@b.c>
-
-` + tail + `
-
-Rejected: an in-process LRU cache — it goes stale across workers.
-
-Cairn-Agent: claude-code/opus
-Cairn-Confidence: verified
-Cairn-Files: cache.go`)
-
-	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The reasoning travels whole, including prose that sits after a stray
-	// co-authorship line.
-	for _, want := range []string{
-		"Add the page cache",
-		"Cache the rendered page",
-		"ninety percent of the latency",
-		"rather than a faster renderer.",
-		"Rejected: an in-process LRU cache",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("reasoning was lost — %q is missing from:\n%s", want, out)
-		}
-	}
-	// The bookkeeping does not.
-	for _, unwanted := range []string{
-		"Co-authored-by", "a@b.c", "Cairn-Agent", "Cairn-Files", "Cairn-Confidence",
-	} {
-		if strings.Contains(out, unwanted) {
-			t.Fatalf("bookkeeping reached the agent — %q in:\n%s", unwanted, out)
-		}
-	}
-}
-
-// The record ends at the last invariant: what came after it is the state of the
-// work at that moment and the machine addressing, neither of which a model
-// reading for intent has any use for.
-func TestContextCutsOpenNextAndTrailers(t *testing.T) {
-	r := testutil.NewRepo(t)
-	r.Write("cache.go", "package cache\n")
-	r.Add("cache.go")
-	r.Commit(`Add the page cache
-
-Cache the rendered page so the list endpoint stops recomputing it.
-
-Rejected: an in-process LRU cache — it goes stale across workers.
-Invariant: the cache key must always include the tenant id.
-Open: eviction on tenant deletion is not wired up.
-Next: wire eviction into the delete path.
-
-Cairn-Agent: claude-code/opus
-Cairn-Session: 26369f10,4d857431
-Cairn-Confidence: verified
-Cairn-Files: cache.go
-Cairn-Transcript: sha256:63e3e4a33ad29d88b7b278f4e5d4e8e5668f6f6cbe15dd245ddcd6b5be468f72`)
-
-	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(strings.TrimSpace(out), "Invariant: the cache key must always include the tenant id.") {
-		t.Fatalf("the message should end at the last invariant:\n%s", out)
-	}
-	for _, unwanted := range []string{"Open:", "Next:", "Cairn-", "sha256:"} {
-		if strings.Contains(out, unwanted) {
-			t.Fatalf("%q survived the cut:\n%s", unwanted, out)
-		}
-	}
-}
-
-// The budget has to fit through the harness, or the block is not delivered at all.
-//
-// Both harnesses cap a hook's additional context at 10 000 characters: Cursor
-// drops anything larger (see the constant in its own bundle, quoted where the
-// budget is defined) and Claude Code spills it to a file with a preview. So this
-// is not a preference to be tuned upward — an injection over the limit buys zero
-// delivered bytes.
-func TestContextBudgetFitsThroughTheHarness(t *testing.T) {
-	r := testutil.NewRepo(t)
-	recordedCommit(t, r, "cache.go", "package cache\n", "Add the page cache")
-	out, err := serveContext(r.Repo, serveRequest{Path: "cache.go", Session: "s1", Hooked: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "Invariant: the cache key must include the tenant id.") {
-		t.Fatalf("a single ordinary record should arrive whole:\n%s", out)
-	}
-	// Cursor: `Ydt = 1e4`, and `n.length > Ydt` means dropped.
-	const harnessLimit = 10000
-	if defaultContextBudget >= harnessLimit {
-		t.Errorf("per-file budget %d is at or over the harness limit %d — the block would be dropped",
-			defaultContextBudget, harnessLimit)
-	}
-	if defaultContextBudget < 8000 {
-		t.Errorf("per-file budget %d gives up room it is allowed to use", defaultContextBudget)
-	}
-	if defaultSessionBudget < 10*defaultContextBudget {
-		t.Errorf("session budget %d leaves room for fewer than ten files", defaultSessionBudget)
 	}
 }

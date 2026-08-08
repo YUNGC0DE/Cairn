@@ -39,28 +39,25 @@ type Message struct {
 	Meta     bool // synthetic/system-injected content, not authored by the human
 }
 
-// Cursor marks how much of a session has already been consumed. Whichever
-// field a parser uses, an empty Cursor means "from the beginning".
+// Cursor marks how much of a session has already been consumed. An empty Cursor
+// means "from the beginning".
 //
-// Byte offsets work for append-only JSONL (Claude Code). Count works for
-// content-addressed stores where the message list is rebuilt per turn (Cursor).
-// Token carries any parser-specific opaque marker (e.g. a root blob id).
+// A byte offset is the whole of it: every agent cairn reads writes an
+// append-only JSONL transcript, one file per session. It used to carry a message
+// count and an opaque token as well, for content-addressed stores where the
+// message list was rebuilt each turn — those are gone with the parsers that
+// needed them, and an old offsets file simply reads as "from the beginning",
+// which costs one re-read of a transcript already distilled.
 type Cursor struct {
-	Bytes int64  `json:"bytes,omitempty"`
-	Count int    `json:"count,omitempty"`
-	Token string `json:"token,omitempty"`
+	Bytes int64 `json:"bytes,omitempty"`
 }
 
 // String renders a cursor for humans.
 func (c Cursor) String() string {
-	switch {
-	case c.Bytes > 0:
+	if c.Bytes > 0 {
 		return fmt.Sprintf("byte %d", c.Bytes)
-	case c.Count > 0:
-		return fmt.Sprintf("message %d", c.Count)
-	default:
-		return "start"
 	}
+	return "start"
 }
 
 // Ref identifies a session on disk without loading it.
@@ -104,17 +101,6 @@ type Parser interface {
 	Discover(repoRoot string, since time.Time) ([]Ref, error)
 	// Load reads a session slice starting at from.
 	Load(ref Ref, from Cursor) (*Session, error)
-}
-
-// Pointerer is implemented by parsers whose sessions are not one file each.
-//
-// The default transcript pointer is the sha256 of Ref.Path, which assumes a
-// session *is* a file. Cursor's IDE keeps every conversation in one shared
-// multi-gigabyte database, where that hash would be both unreadable inside a
-// commit hook and wrong — it would change whenever any other conversation did.
-type Pointerer interface {
-	// Pointer returns a "sha256:…" pointer to this session's content, or "".
-	Pointer(ref Ref) string
 }
 
 // LastHumanPrompt returns the most recent genuine user message text, which is

@@ -3,7 +3,7 @@
 export GOCACHE ?= $(HOME)/.cache/go-build
 export CGO_ENABLED ?= 0
 
-# The binary is git-cairn so that git finds it as a subcommand (`git cairn why …`).
+# The binary is git-cairn so that git finds it as a subcommand (`git cairn show …`).
 # The cairn symlink next to it keeps the short form working.
 BIN := bin/git-cairn
 PKGS := ./...

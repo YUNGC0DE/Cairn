@@ -85,13 +85,12 @@ func extractAll(ctx context.Context, engine llm.Engine, sessions []*transcript.S
 			})
 			r := result{i: i, resp: resp, err: err, spent: time.Since(start)}
 			if err == nil {
-				var wire extraction
-				if jsonErr := llm.ExtractJSON(resp.Text, &wire); jsonErr != nil {
+				var ex Extraction
+				if jsonErr := llm.ExtractJSON(resp.Text, &ex); jsonErr != nil {
 					r.err = fmt.Errorf("unusable JSON: %w", jsonErr)
 				} else {
-					ex := wire.toExtraction()
-					sanitize(ex, in)
-					r.ex = ex
+					sanitize(&ex, in)
+					r.ex = &ex
 				}
 			}
 			results[i] = r
@@ -130,45 +129,34 @@ func extractAll(ctx context.Context, engine llm.Engine, sessions []*transcript.S
 // merge stacks what each session produced into one record.
 //
 // Still naive concatenation rather than a second model call: a summarising pass
-// is another chance to invent, and it would blur which session wanted what. What
+// is another chance to invent, and it would blur which session decided what. What
 // changed is that concatenation is no longer blind. Sessions behind one commit are
-// usually one person circling one problem, so each independent extraction restates
-// the same intention in its own words; joining them verbatim is how a record ends
-// up saying the same thing four times, which is the single most common complaint
-// about these records. Near-duplicates are folded here (see similar.go), and each
-// distinct intention is kept as its own entry rather than glued into one
-// paragraph — two sessions that wanted different things did not want one blended
-// thing.
+// usually one person circling one problem, so each independent extraction states
+// the same rule in its own words; joining them verbatim is how a record ends up
+// saying the same thing four times, which is the single most common complaint
+// about these records. Near-duplicates are folded here (see similar.go).
 func merge(exs []*Extraction) (*Extraction, []string) {
 	if len(exs) == 1 {
 		return exs[0], nil
 	}
 	out := &Extraction{}
 	for _, ex := range exs {
-		out.Why = append(out.Why, ex.Why...)
 		out.Rejected = append(out.Rejected, ex.Rejected...)
 		out.Invariants = append(out.Invariants, ex.Invariants...)
 		out.Claims = append(out.Claims, ex.Claims...)
 	}
 	rejectedIn, invariantsIn := len(out.Rejected), len(out.Invariants)
-	why, droppedWhy := mergeWhy(out.Why)
-	out.Why = why
-	out.Rejected = dedupRejected(out.Rejected)
-	out.Invariants = dedupInvariants(out.Invariants)
+	out.Rejected = dedupRules(out.Rejected)
+	out.Invariants = dedupRules(out.Invariants)
 	out.Claims = dedupStrings(out.Claims)
 	if len(out.Claims) > maxMergedClaims {
 		out.Claims = out.Claims[:maxMergedClaims]
 	}
 
-	// Say what the merge removed. A record that silently drops one session's
-	// account of what was wanted looks complete and is not, and the user is the
-	// only one who can tell whether that session mattered.
+	// Say what the merge removed. A record that silently folds two sessions'
+	// accounts together looks complete and may not be, and the user is the only
+	// one who can tell whether the fold was right.
 	var notes []string
-	if droppedWhy > 0 {
-		notes = append(notes, fmt.Sprintf(
-			"%d of %d sessions restated an intention already recorded, or did not fit the "+
-				"record's opening; theirs was left out", droppedWhy, len(exs)))
-	}
 	if n := rejectedIn - len(out.Rejected); n > 0 {
 		notes = append(notes, fmt.Sprintf("%d rejected alternatives were the same option worded twice", n))
 	}
